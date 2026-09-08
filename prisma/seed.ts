@@ -20,7 +20,8 @@ async function main() {
     data: {
       nombre: 'Sala de Estudio 1',
       capacidad: 4,
-      sala: { create: { ubicacion: 'Planta baja', descripcion: 'Sala grupal con proyector' } },
+      descripcion: 'Sala grupal con proyector',
+      sala: { create: { ubicacion: 'Planta baja' } },
       disponibilidades: {
         create: [{ diaSemana: 6, minutosInicio: 480, minutosFin: 1320 }], // sábado 08:00-22:00
       },
