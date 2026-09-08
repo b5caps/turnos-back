@@ -1,0 +1,56 @@
+// prisma/schema/recurso.prisma
+
+model Recurso {
+  id               Int              @id @default(autoincrement())
+  nombre           String
+  capacidad        Int
+  descripcion      String
+  disponibilidades Disponibilidad[]
+  bloqueos         Bloqueo[]
+  reservas         ReservaRecurso[]
+  reservasPendientes ReservaPendienteRecurso[]
+}
+
+model Sala {
+  id          Int     @id @default(autoincrement())
+  recursoId   Int     @unique
+  recurso     Recurso @relation(fields: [recursoId], references: [id])
+  ubicacion   String
+
+}
+
+model Notebook {
+  id          Int     @id @default(autoincrement())
+  recursoId   Int     @unique
+  recurso     Recurso @relation(fields: [recursoId], references: [id])
+  numeroSerie String
+  marca       String
+  modelo      String   
+}
+
+model Disponibilidad {
+  id            Int     @id @default(autoincrement())
+  recursoId     Int
+  recurso       Recurso @relation(fields: [recursoId], references: [id])
+  diaSemana     Int
+  minutosInicio Int
+  minutosFin    Int
+}
+
+model Bloqueo {
+  id              Int       @id @default(autoincrement())
+  recursoId       Int
+  recurso         Recurso   @relation(fields: [recursoId], references: [id])
+  fechaHoraInicio DateTime
+  fechaHoraFin    DateTime?
+  motivo          String
+}
+
+model ReservaRecurso {
+  reservaId Int
+  recursoId Int
+  reserva   Reserva @relation(fields: [reservaId], references: [id])
+  recurso   Recurso @relation(fields: [recursoId], references: [id])
+
+  @@id([reservaId, recursoId])
+}

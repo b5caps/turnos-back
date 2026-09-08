@@ -1,0 +1,29 @@
+// prisma/schema/reserva.prisma
+
+model Reserva {
+  id                    Int              @id @default(autoincrement())
+  usuarioId             Int
+  usuario               Usuario          @relation(fields: [usuarioId], references: [id])
+  fechaHoraInicio        DateTime
+  fechaHoraFin           DateTime
+  fechaLimiteCheckIn     DateTime
+  fechaHoraConfirmacion  DateTime?
+  fechaHoraCancelacion   DateTime?
+  motivoCancelacion      String?
+  fechaHoraCheckIn       DateTime?
+  fechaHoraCheckOut      DateTime?
+  fechaCreacion          DateTime         @default(now())
+  observacion            String?
+  recursos               ReservaRecurso[]
+}
+
+model ReservaPendiente {
+  id                       Int      @id @default(autoincrement())
+  usuarioId                Int
+  usuario                  Usuario  @relation(fields: [usuarioId], references: [id])
+  fechaHoraDeseadaInicio   DateTime
+  fechaHoraDeseadaFin      DateTime
+  fechaHoraSolicitud       DateTime @default(now())
+  recursos                 ReservaPendienteRecurso[]
+}
+

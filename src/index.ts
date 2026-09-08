@@ -6,6 +6,11 @@ import { authRoutes } from './routes/auth.routes.js'
 
 const app = new Hono()
 const port = Number(process.env.PORT ?? 3000)
+import { OpenAPIHono } from '@hono/zod-openapi'
+import { swaggerUI } from '@hono/swagger-ui'
+import recursosRoutes from './routes/recursos.routes.js'
+
+const app = new OpenAPIHono()
 
 app.get('/', (c) => {
   return c.text('Hello Hono!')
@@ -37,4 +42,22 @@ startServer().catch(async (error) => {
   console.error('No se pudo iniciar el servidor:', error)
   await prisma.$disconnect()
   process.exit(1)
+app.route('/api/recursos', recursosRoutes)
+
+app.doc('/doc', {
+  openapi: '3.0.0',
+  info: { version: '1.0.0', title: 'GREB/SIREB API' },
 })
+
+app.get('/docs', swaggerUI({ url: '/doc' }))
+
+serve(
+  {
+    fetch: app.fetch,
+    port: 3000,
+  },
+  (info) => {
+    console.log(`Server is running on http://localhost:${info.port}`)
+    console.log(`Docs disponibles en http://localhost:${info.port}/docs`)
+  }
+)

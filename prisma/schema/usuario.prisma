@@ -1,0 +1,47 @@
+
+
+enum Rol {
+  ADMIN
+  EXTERNO
+  UTN
+}
+
+enum TipoDocumento {
+  DNI
+  CUIL
+}
+
+model Usuario {
+  id            Int           @id @default(autoincrement())
+  tipoDocumento TipoDocumento
+  documento     String
+  nombre        String
+  apellido      String
+  email         String
+  telefono      String
+  rol           Rol
+  perfilUTN     PerfilUTN?
+  perfilExterno PerfilExterno?
+  reservas      Reserva[]
+  reservasPendientes ReservaPendiente[] 
+}
+
+model PerfilUTN {
+  id                   Int      @id @default(autoincrement())
+  usuarioId            Int      @unique
+  usuario              Usuario  @relation(fields: [usuarioId], references: [id])
+  legajo               String
+  docente              Boolean
+  carrera              String?
+  ultimaSincronizacion DateTime
+}
+
+model PerfilExterno {
+  id           Int     @id @default(autoincrement())
+  usuarioId    Int     @unique
+  usuario      Usuario @relation(fields: [usuarioId], references: [id])
+  passwordHash String
+  localidad    String
+  provincia    String
+  organizacion String
+}
