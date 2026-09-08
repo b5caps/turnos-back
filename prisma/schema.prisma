@@ -1,19 +1,10 @@
-generator client {
-  provider = "prisma-client-js"
-}
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-model Usuario {
-  id        Int      @id @default(autoincrement())
-  nombre    String
-  correo    String   @unique
-  legajo    String   @unique
-  dni       String   @unique
-  password  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+generator client {
+  provider = "prisma-client-js"
 }
+
+// modelos existentes en prisma/schema/*.prisma se cargan automáticamente por el esquema principal
