@@ -1,5 +1,3 @@
-
-
 enum Rol {
   ADMIN
   EXTERNO
@@ -12,18 +10,18 @@ enum TipoDocumento {
 }
 
 model Usuario {
-  id            Int           @id @default(autoincrement())
-  tipoDocumento TipoDocumento
-  documento     String
-  nombre        String
-  apellido      String
-  email         String
-  telefono      String
-  rol           Rol
-  perfilUTN     PerfilUTN?
-  perfilExterno PerfilExterno?
-  reservas      Reserva[]
-  reservasPendientes ReservaPendiente[] 
+  id                 Int                @id @default(autoincrement())
+  tipoDocumento      TipoDocumento
+  documento          String
+  nombre             String
+  apellido           String
+  email              String
+  telefono           String
+  rol                Rol
+  perfilUTN          PerfilUTN?
+  perfilExterno      PerfilExterno?
+  reservas           Reserva[]
+  reservasPendientes ReservaPendiente[]
 }
 
 model PerfilUTN {

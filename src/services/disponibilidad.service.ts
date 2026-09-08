@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
+type TipoRecurso = 'SALA' | 'NOTEBOOK'
 
 type ConsultaDisponibilidadInput = {
   fechaHoraInicio: string
@@ -9,12 +10,38 @@ type ConsultaDisponibilidadInput = {
   tipo?: TipoRecurso
 }
 
+export type CrearReservaInput = {
+  usuarioId: number
+  recursoIds: number[]
+  fechaHoraInicio: string
+  fechaHoraFin: string
+  fechaLimiteCheckIn?: string
+  observacion?: string
+}
+
+export class DisponibilidadError extends Error {}
+
 export async function consultarDisponibilidad(input: ConsultaDisponibilidadInput) {
+  return consultarDisponibilidadPorTipo(input)
+}
+
+export async function consultarDisponibilidadSalas(input: Omit<ConsultaDisponibilidadInput, 'tipo'>) {
+  return consultarDisponibilidadPorTipo({ ...input, tipo: 'SALA' })
+}
+
+export async function consultarDisponibilidadNotebooks(input: Omit<ConsultaDisponibilidadInput, 'tipo'>) {
+  return consultarDisponibilidadPorTipo({ ...input, tipo: 'NOTEBOOK' })
+}
+
+async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput) {
   const inicio = new Date(input.fechaHoraInicio)
   const fin = new Date(input.fechaHoraFin)
   const diaSemana = inicio.getDay()
 
   const recursos: any[] = await prisma.recurso.findMany({
+    where: input.tipo
+      ? { [input.tipo === 'SALA' ? 'sala' : 'notebook']: { isNot: null } }
+      : undefined,
     include: {
       sala: true,
       notebook: true,
@@ -46,8 +73,6 @@ export async function consultarDisponibilidad(input: ConsultaDisponibilidadInput
   })
 
   return recursos.map((recurso: any) => {
-    const tipo = recurso.sala ? 'SALA' : recurso.notebook ? 'NOTEBOOK' : 'OTRO'
-
     // RF-15 / RF-17: valida si el rango solicitado cae dentro de la disponibilidad semanal.
     const dentroDeHorario = recurso.disponibilidades.some((disponibilidad: any) => {
       const diaInicio = new Date(inicio)
@@ -91,10 +116,19 @@ export async function consultarDisponibilidad(input: ConsultaDisponibilidadInput
 
     const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0
 
+    const datosEspecificos = recurso.sala
+      ? { ubicacion: recurso.sala.ubicacion }
+      : {
+          numeroSerie: recurso.notebook.numeroSerie,
+          marca: recurso.notebook.marca,
+          modelo: recurso.notebook.modelo,
+        }
+
     return {
       id: recurso.id,
       nombre: recurso.nombre,
       capacidad: recurso.capacidad,
+      ...datosEspecificos,
       ocupacion,
       cuposLibres,
       disponible,
@@ -104,5 +138,64 @@ export async function consultarDisponibilidad(input: ConsultaDisponibilidadInput
         horaFin: reserva.fechaHoraFin.toISOString()
       }))
     }
+  })
+}
+
+export async function crearReserva(input: CrearReservaInput) {
+  const inicio = new Date(input.fechaHoraInicio)
+  const fin = new Date(input.fechaHoraFin)
+
+  if (Number.isNaN(inicio.getTime()) || Number.isNaN(fin.getTime()) || inicio >= fin) {
+    throw new DisponibilidadError('El rango horario no es válido')
+  }
+
+  const recursoIds = [...new Set(input.recursoIds)]
+  if (recursoIds.length === 0) {
+    throw new DisponibilidadError('Debe seleccionar al menos un recurso')
+  }
+
+  const disponibilidad = await consultarDisponibilidad({
+    fechaHoraInicio: input.fechaHoraInicio,
+    fechaHoraFin: input.fechaHoraFin,
+  })
+  const seleccionados = disponibilidad.filter((recurso) => recursoIds.includes(recurso.id))
+
+  if (seleccionados.length !== recursoIds.length) {
+    throw new DisponibilidadError('Uno o más recursos no existen')
+  }
+
+  const noDisponibles = seleccionados.filter((recurso) => !recurso.disponible)
+  if (noDisponibles.length > 0) {
+    throw new DisponibilidadError(
+      `Los recursos no están disponibles: ${noDisponibles.map((recurso) => recurso.nombre).join(', ')}`
+    )
+  }
+
+  const fechaLimiteCheckIn = input.fechaLimiteCheckIn
+    ? new Date(input.fechaLimiteCheckIn)
+    : inicio
+
+  if (Number.isNaN(fechaLimiteCheckIn.getTime()) || fechaLimiteCheckIn > inicio) {
+    throw new DisponibilidadError('La fecha límite de check-in no es válida')
+  }
+
+  return prisma.$transaction(async (tx) => {
+    return tx.reserva.create({
+      data: {
+        usuarioId: input.usuarioId,
+        fechaHoraInicio: inicio,
+        fechaHoraFin: fin,
+        fechaLimiteCheckIn,
+        observacion: input.observacion,
+        recursos: {
+          create: recursoIds.map((recursoId) => ({ recursoId })),
+        },
+      },
+      include: {
+        recursos: {
+          include: { recurso: true },
+        },
+      },
+    })
   })
 }
