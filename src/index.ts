@@ -1,3 +1,4 @@
+import { cors } from 'hono/cors'
 import { serve } from '@hono/node-server'
 import { OpenAPIHono } from '@hono/zod-openapi'
 import { swaggerUI } from '@hono/swagger-ui'
@@ -6,6 +7,7 @@ import reservasRoutes from './routes/reservas.routes.js'
 
 const app = new OpenAPIHono()
 
+app.use("/*", cors())
 app.get('/', (c) => {
   return c.text('Hello Hono!')
 })
