@@ -36,6 +36,7 @@ async function main() {
       disponibilidades: {
         create: [{ diaSemana: 6, minutosInicio: 480, minutosFin: 1320 }],
       },
+      descripcion: "Tiene Word"
     },
   })
 
