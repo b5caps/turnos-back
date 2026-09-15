@@ -1,24 +1,32 @@
 import 'dotenv/config'
 import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
-import { prisma } from './lib/prisma.js'
-import { authRoutes } from './routes/auth.routes.js'
-
-const app = new Hono()
-const port = Number(process.env.PORT ?? 3000)
-import { OpenAPIHono } from '@hono/zod-openapi'
 import { swaggerUI } from '@hono/swagger-ui'
-import recursosRoutes from './routes/recursos.routes.js'
+import { OpenAPIHono } from '@hono/zod-openapi'
+import { prisma } from './lib/prisma.js'
+import { notebookRoutes } from './routes/notebook.routes.js'
+import { notificacionRoutes } from './routes/notificacion.routes.js'
+import { reservaRoutes } from './routes/reserva.routes.js'
+import { salaRoutes } from './routes/sala.routes.js'
+import { usuarioRoutes } from './routes/usuario.routes.js'
 
 const app = new OpenAPIHono()
+const port = Number(process.env.PORT ?? 3000)
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
+app.get('/', (c) => c.text('Hello Hono!'))
+app.route('/api/usuarios', usuarioRoutes)
+app.route('/api/salas', salaRoutes)
+app.route('/api/notebooks', notebookRoutes)
+app.route('/api/reservas', reservaRoutes)
+app.route('/api/notificaciones', notificacionRoutes)
+
+app.doc('/doc', {
+  openapi: '3.0.0',
+  info: { version: '1.0.0', title: 'GREB/SIREB API' },
 })
 
-app.route('/auth', authRoutes)
+app.get('/docs', swaggerUI({ url: '/doc' }))
 
-const startServer = async () => {
+async function startServer() {
   if (!process.env.DATABASE_URL || !process.env.JWT_SECRET) {
     throw new Error('Faltan DATABASE_URL o JWT_SECRET en el archivo .env')
   }
@@ -30,11 +38,9 @@ const startServer = async () => {
   await prisma.$connect()
   console.log('Base de datos conectada correctamente')
 
-  serve({
-    fetch: app.fetch,
-    port
-  }, (info) => {
+  serve({ fetch: app.fetch, port }, (info) => {
     console.log(`Servidor corriendo en http://localhost:${info.port}`)
+    console.log(`Documentacion disponible en http://localhost:${info.port}/docs`)
   })
 }
 
@@ -42,22 +48,4 @@ startServer().catch(async (error) => {
   console.error('No se pudo iniciar el servidor:', error)
   await prisma.$disconnect()
   process.exit(1)
-app.route('/api/recursos', recursosRoutes)
-
-app.doc('/doc', {
-  openapi: '3.0.0',
-  info: { version: '1.0.0', title: 'GREB/SIREB API' },
 })
-
-app.get('/docs', swaggerUI({ url: '/doc' }))
-
-serve(
-  {
-    fetch: app.fetch,
-    port: 3000,
-  },
-  (info) => {
-    console.log(`Server is running on http://localhost:${info.port}`)
-    console.log(`Docs disponibles en http://localhost:${info.port}/docs`)
-  }
-)

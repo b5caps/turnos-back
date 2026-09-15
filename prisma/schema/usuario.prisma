@@ -1,47 +1,28 @@
-
-
 enum Rol {
   ADMIN
-  EXTERNO
   UTN
-}
-
-enum TipoDocumento {
-  DNI
-  CUIL
+  EXTERNO
 }
 
 model Usuario {
-  id            Int           @id @default(autoincrement())
-  tipoDocumento TipoDocumento
-  documento     String
+  id            Int      @id @default(autoincrement())
   nombre        String
   apellido      String
-  email         String
-  telefono      String
+  email         String   @unique
+  documento     String   @unique
+  telefono      String?
+  passwordHash  String
   rol           Rol
-  perfilUTN     PerfilUTN?
-  perfilExterno PerfilExterno?
-  reservas      Reserva[]
-  reservasPendientes ReservaPendiente[] 
-}
+  legajo        String?  @unique
+  carrera       String?
+  esDocente     Boolean?
+  organizacion  String?
+  localidad     String?
+  provincia     String?
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
 
-model PerfilUTN {
-  id                   Int      @id @default(autoincrement())
-  usuarioId            Int      @unique
-  usuario              Usuario  @relation(fields: [usuarioId], references: [id])
-  legajo               String
-  docente              Boolean
-  carrera              String?
-  ultimaSincronizacion DateTime
-}
-
-model PerfilExterno {
-  id           Int     @id @default(autoincrement())
-  usuarioId    Int     @unique
-  usuario      Usuario @relation(fields: [usuarioId], references: [id])
-  passwordHash String
-  localidad    String
-  provincia    String
-  organizacion String
+  reservas        Reserva[]      @relation("ReservaUsuario")
+  reservasCreadas Reserva[]      @relation("ReservaCreador")
+  notificaciones  Notificacion[]
 }

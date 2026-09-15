@@ -1,62 +1,60 @@
-// prisma/seed.ts
+import bcrypt from 'bcryptjs'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
 async function main() {
-  const usuario = await prisma.usuario.create({
-    data: {
-      tipoDocumento: 'DNI',
-      documento: '46577511',
+  const passwordHash = await bcrypt.hash('Password123', 10)
+
+  const usuario = await prisma.usuario.upsert({
+    where: { email: 'mc@test.com' },
+    update: {},
+    create: {
       nombre: 'Mc',
       apellido: 'Test',
       email: 'mc@test.com',
-      telefono: '3564000000',
+      documento: '46577511',
+      passwordHash,
       rol: 'UTN',
+      legajo: '12345',
     },
   })
 
-  const salaRecurso = await prisma.recurso.create({
-    data: {
+  const sala = await prisma.sala.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
       nombre: 'Sala de Estudio 1',
+      descripcion: 'Sala grupal con proyector',
+      ubicacion: 'Planta baja',
       capacidad: 4,
-      sala: { create: { ubicacion: 'Planta baja', descripcion: 'Sala grupal con proyector' } },
-      disponibilidades: {
-        create: [{ diaSemana: 6, minutosInicio: 480, minutosFin: 1320 }], // sábado 08:00-22:00
-      },
     },
   })
 
-  const notebookRecurso = await prisma.recurso.create({
-    data: {
-      nombre: 'Notebook 01',
-      capacidad: 1,
-      notebook: { create: { numeroSerie: 'NB-001', marca: 'Lenovo', modelo: 'ThinkPad E14' } },
-      disponibilidades: {
-        create: [{ diaSemana: 6, minutosInicio: 480, minutosFin: 1320 }],
-      },
-    },
+  const notebook = await prisma.notebook.upsert({
+    where: { codigo: 'NB-001' },
+    update: {},
+    create: { codigo: 'NB-001', marca: 'Lenovo', modelo: 'ThinkPad E14' },
   })
 
-  const reserva = await prisma.reserva.create({
-    data: {
+  await prisma.reserva.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
       usuarioId: usuario.id,
-      fechaHoraInicio: new Date('2026-09-05T14:00:00'),
-      fechaHoraFin: new Date('2026-09-05T15:00:00'),
-      fechaLimiteCheckIn: new Date('2026-09-05T14:15:00'),
+      salaId: sala.id,
+      notebookId: notebook.id,
+      cantidadPersonas: 1,
+      fechaHoraInicio: new Date('2026-09-15T14:00:00'),
+      fechaHoraFin: new Date('2026-09-15T15:00:00'),
+      fechaLimiteCheckIn: new Date('2026-09-15T14:15:00'),
     },
   })
-
-  await prisma.reservaRecurso.create({
-    data: { reservaId: reserva.id, recursoId: salaRecurso.id },
-  })
-
-  console.log('Seed cargado ✅')
 }
 
 main()
-  .catch((e) => {
-    console.error(e)
+  .catch((error) => {
+    console.error(error)
     process.exit(1)
   })
   .finally(() => prisma.$disconnect())

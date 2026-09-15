@@ -1,0 +1,11 @@
+model Notebook {
+  id            Int      @id @default(autoincrement())
+  codigo        String   @unique
+  marca         String
+  modelo        String
+  activa        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  reservas Reserva[]
+}

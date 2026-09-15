@@ -1,29 +1,33 @@
-// prisma/schema/reserva.prisma
+enum EstadoReserva {
+  CONFIRMADA
+  EN_CURSO
+  FINALIZADA
+  CANCELADA
+  VENCIDA
+}
 
 model Reserva {
-  id                    Int              @id @default(autoincrement())
-  usuarioId             Int
-  usuario               Usuario          @relation(fields: [usuarioId], references: [id])
-  fechaHoraInicio        DateTime
-  fechaHoraFin           DateTime
-  fechaLimiteCheckIn     DateTime
-  fechaHoraConfirmacion  DateTime?
-  fechaHoraCancelacion   DateTime?
-  motivoCancelacion      String?
-  fechaHoraCheckIn       DateTime?
-  fechaHoraCheckOut      DateTime?
-  fechaCreacion          DateTime         @default(now())
-  observacion            String?
-  recursos               ReservaRecurso[]
-}
+  id                   Int           @id @default(autoincrement())
+  usuarioId            Int
+  salaId               Int
+  notebookId           Int?
+  creadaPorId          Int?
+  cantidadPersonas     Int
+  fechaHoraInicio      DateTime
+  fechaHoraFin         DateTime
+  fechaLimiteCheckIn   DateTime
+  estado               EstadoReserva @default(CONFIRMADA)
+  fechaHoraCheckIn     DateTime?
+  fechaHoraCheckOut    DateTime?
+  fechaHoraCancelacion DateTime?
+  motivoCancelacion    String?
+  observacion          String?
+  creadoEn             DateTime      @default(now())
+  actualizadoEn        DateTime      @updatedAt
 
-model ReservaPendiente {
-  id                       Int      @id @default(autoincrement())
-  usuarioId                Int
-  usuario                  Usuario  @relation(fields: [usuarioId], references: [id])
-  fechaHoraDeseadaInicio   DateTime
-  fechaHoraDeseadaFin      DateTime
-  fechaHoraSolicitud       DateTime @default(now())
-  recursos                 ReservaPendienteRecurso[]
+  usuario        Usuario        @relation("ReservaUsuario", fields: [usuarioId], references: [id])
+  sala           Sala           @relation(fields: [salaId], references: [id])
+  notebook       Notebook?      @relation(fields: [notebookId], references: [id])
+  creadaPor      Usuario?       @relation("ReservaCreador", fields: [creadaPorId], references: [id])
+  notificaciones Notificacion[]
 }
-

@@ -1,0 +1,12 @@
+model Sala {
+  id            Int      @id @default(autoincrement())
+  nombre        String
+  descripcion   String?
+  ubicacion     String
+  capacidad     Int
+  activa        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  reservas Reserva[]
+}

@@ -1,0 +1,19 @@
+enum TipoNotificacion {
+  RESERVA_CREADA
+  RESERVA_CANCELADA
+  RECORDATORIO_CHECK_IN
+  ESPACIO_LIBERADO
+}
+
+model Notificacion {
+  id        Int              @id @default(autoincrement())
+  usuarioId Int
+  reservaId Int?
+  tipo      TipoNotificacion
+  mensaje   String
+  leidaEn   DateTime?
+  creadoEn  DateTime         @default(now())
+
+  usuario Usuario  @relation(fields: [usuarioId], references: [id])
+  reserva Reserva? @relation(fields: [reservaId], references: [id])
+}
