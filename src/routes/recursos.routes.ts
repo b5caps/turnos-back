@@ -16,24 +16,38 @@ const querySchema = z.object({
   }),
 })
 
+const bloqueDisponibilidadSchema = z.object({
+  horaInicio: z.string(),
+  horaFin: z.string(),
+  ocupacion: z.number(),
+  disponible: z.boolean(),
+  motivoNoDisponible: z.enum(['fuera_de_horario', 'bloqueado', 'sin_cupos']).nullable(),
+})
+
 const disponibilidadBaseSchema = z.object({
   id: z.number(),
   nombre: z.string(),
   capacidad: z.number(),
-  ocupacion: z.number(),
-  cuposLibres: z.number(),
   disponible: z.boolean(),
   motivoNoDisponible: z.enum(['fuera_de_horario', 'bloqueado', 'sin_cupos']).nullable(),
   horariosReservados: z.array(z.object({ horaInicio: z.string(), horaFin: z.string() })),
+  bloques: z.array(bloqueDisponibilidadSchema),
+})
+
+const horarioEstablecimientoSchema = z.object({
+  horaApertura: z.string(),
+  horaCierre: z.string(),
 })
 
 const salasResponseSchema = z.object({
+  horarioEstablecimiento: horarioEstablecimientoSchema,
   data: z.array(disponibilidadBaseSchema.extend({
     ubicacion: z.string(),
   })),
 })
 
 const notebooksResponseSchema = z.object({
+  horarioEstablecimiento: horarioEstablecimientoSchema,
   data: z.array(disponibilidadBaseSchema.extend({
     numeroSerie: z.string(),
     marca: z.string(),
@@ -68,13 +82,13 @@ const disponibilidadNotebooksRoute = createRoute({
 recursos.openapi(disponibilidadSalasRoute, async (c) => {
   const params = c.req.valid('query')
   const resultado = await consultarDisponibilidadSalas(params)
-  return c.json({ data: resultado })
+  return c.json(resultado)
 })
 
 recursos.openapi(disponibilidadNotebooksRoute, async (c) => {
   const params = c.req.valid('query')
   const resultado = await consultarDisponibilidadNotebooks(params)
-  return c.json({ data: resultado })
+  return c.json(resultado)
 })
 
 export default recursos
