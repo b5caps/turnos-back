@@ -8,11 +8,9 @@ import {
 const recursos = new OpenAPIHono()
 
 const querySchema = z.object({
-  fechaHoraInicio: z.string().datetime({ offset: true, local: true }).openapi({
-    example: '2026-09-05T14:00:00',
-  }),
-  fechaHoraFin: z.string().datetime({ offset: true, local: true }).openapi({
-    example: '2026-09-05T16:00:00',
+  fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato YYYY-MM-DD requerido').openapi({
+    example: '2026-09-05',
+    description: 'Fecha a consultar (YYYY-MM-DD)',
   }),
 })
 
@@ -28,27 +26,25 @@ const disponibilidadBaseSchema = z.object({
   id: z.number(),
   nombre: z.string(),
   capacidad: z.number(),
-  disponible: z.boolean(),
-  motivoNoDisponible: z.enum(['fuera_de_horario', 'bloqueado', 'sin_cupos']).nullable(),
   horariosReservados: z.array(z.object({ horaInicio: z.string(), horaFin: z.string() })),
   bloques: z.array(bloqueDisponibilidadSchema),
 })
 
 const horarioEstablecimientoSchema = z.object({
-  horaApertura: z.string(),
-  horaCierre: z.string(),
+  minutosApertura: z.number().int().openapi({ example: 480 }),
+  minutosCierre: z.number().int().openapi({ example: 1320 }),
 })
 
 const salasResponseSchema = z.object({
   horarioEstablecimiento: horarioEstablecimientoSchema,
-  data: z.array(disponibilidadBaseSchema.extend({
+  recursos: z.array(disponibilidadBaseSchema.extend({
     ubicacion: z.string(),
   })),
 })
 
 const notebooksResponseSchema = z.object({
   horarioEstablecimiento: horarioEstablecimientoSchema,
-  data: z.array(disponibilidadBaseSchema.extend({
+  recursos: z.array(disponibilidadBaseSchema.extend({
     numeroSerie: z.string(),
     marca: z.string(),
     modelo: z.string(),

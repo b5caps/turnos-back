@@ -5,8 +5,7 @@ const prisma = new PrismaClient()
 type TipoRecurso = 'SALA' | 'NOTEBOOK'
 
 type ConsultaDisponibilidadInput = {
-  fechaHoraInicio: string
-  fechaHoraFin: string
+  fecha: string
   tipo?: TipoRecurso
 }
 
@@ -33,58 +32,15 @@ export async function consultarDisponibilidadNotebooks(input: Omit<ConsultaDispo
   return consultarDisponibilidadPorTipo({ ...input, tipo: 'NOTEBOOK' })
 }
 
-const DURACION_BLOQUE_MS = 15 * 60 * 1000 // 15 minutos
+const DURACION_BLOQUE_MIN = 15 // 15 minutos
 
 async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput) {
-  const inicio = new Date(input.fechaHoraInicio)
-  const fin = new Date(input.fechaHoraFin)
-
-  const recursos: any[] = await prisma.recurso.findMany({
-    where: input.tipo
-      ? { [input.tipo === 'SALA' ? 'sala' : 'notebook']: { isNot: null } }
-      : undefined,
-    include: {
-      sala: true,
-      notebook: true,
-      disponibilidades: true,
-      bloqueos: {
-        where: {
-          OR: [
-            {
-              fechaHoraInicio: { lt: fin },
-              fechaHoraFin: { gt: inicio }
-            },
-            {
-              fechaHoraInicio: { lt: fin },
-              fechaHoraFin: null
-            }
-          ]
-        }
-      },
-      reservas: {
-        include: {
-          reserva: true
-        }
-      }
-    }
-  })
-
-  // Generar los intervalos de 15 minutos entre inicio y fin
-  const intervalosBloques: { inicio: Date; fin: Date }[] = []
-  let tiempoActual = inicio.getTime()
-  const tiempoFin = fin.getTime()
-
-  while (tiempoActual < tiempoFin) {
-    const siguienteTiempo = Math.min(tiempoActual + DURACION_BLOQUE_MS, tiempoFin)
-    intervalosBloques.push({
-      inicio: new Date(tiempoActual),
-      fin: new Date(siguienteTiempo)
-    })
-    tiempoActual = siguienteTiempo
-  }
+  const diaStr = input.fecha.split('T')[0]
+  const [año, mes, dia] = diaStr.split('-').map(Number)
+  const fechaConsultada = new Date(año, mes - 1, dia)
+  const diaSemana = fechaConsultada.getDay()
 
   // Horarios de apertura y cierre del establecimiento para el día consultado
-  const diaSemana = inicio.getDay()
   const disponibilidadesDia = await prisma.disponibilidad.findMany({
     where: { diaSemana }
   })
@@ -93,57 +49,99 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
   let minutosCierre = 1320   // 22:00 por defecto
 
   if (disponibilidadesDia.length > 0) {
-    minutosApertura = Math.min(...disponibilidadesDia.map((d: any) => d.minutosInicio))
-    minutosCierre = Math.max(...disponibilidadesDia.map((d: any) => d.minutosFin))
+    minutosApertura = Math.min(...disponibilidadesDia.map((d) => d.minutosInicio))
+    minutosCierre = Math.max(...disponibilidadesDia.map((d) => d.minutosFin))
   }
-
-  const diaStr = input.fechaHoraInicio.split('T')[0]
-  const hhApertura = String(Math.floor(minutosApertura / 60)).padStart(2, '0')
-  const mmApertura = String(minutosApertura % 60).padStart(2, '0')
-  const hhCierre = String(Math.min(23, Math.floor(minutosCierre / 60))).padStart(2, '0')
-  const mmCierre = String(minutosCierre >= 1440 ? 59 : minutosCierre % 60).padStart(2, '0')
-
-  const offsetMatch = input.fechaHoraInicio.match(/([+-]\d{2}:\d{2}|Z)$/)
-  const offsetStr = offsetMatch ? offsetMatch[0] : ''
 
   const horarioEstablecimiento = {
-    horaApertura: `${diaStr}T${hhApertura}:${mmApertura}:00${offsetStr}`,
-    horaCierre: `${diaStr}T${hhCierre}:${mmCierre}:00${offsetStr}`,
+    minutosApertura,
+    minutosCierre,
   }
 
-  const data = recursos.map((recurso: any) => {
-    // Reservas activas dentro del rango total consultado
+  const inicioDia = new Date(fechaConsultada.getTime() + minutosApertura * 60000)
+  const finDia = new Date(fechaConsultada.getTime() + minutosCierre * 60000)
+
+  const recursos = await prisma.recurso.findMany({
+    where: input.tipo
+      ? { [input.tipo === 'SALA' ? 'sala' : 'notebook']: { isNot: null } }
+      : undefined,
+    include: {
+      sala: true,
+      notebook: true,
+      disponibilidades: {
+        where: {
+          diaSemana,
+        },
+      },
+      bloqueos: {
+        where: {
+          OR: [
+            {
+              fechaHoraInicio: { lt: finDia },
+              fechaHoraFin: { gt: inicioDia }
+            },
+            {
+              fechaHoraInicio: { lt: finDia },
+              fechaHoraFin: null
+            }
+          ]
+        }
+      },
+      reservas: {
+        where: {
+          reserva: {
+            fechaHoraCancelacion: null,
+            fechaHoraInicio: { lt: finDia },
+            fechaHoraFin: { gt: inicioDia }
+          }
+        },
+        include: {
+          reserva: true
+        }
+      }
+    }
+  })
+
+  // Generar los intervalos de 15 minutos entre apertura y cierre del día
+  const intervalosBloques: { inicioMin: number; finMin: number; inicio: Date; fin: Date }[] = []
+  let minActual = minutosApertura
+
+  while (minActual < minutosCierre) {
+    const minSiguiente = minActual + DURACION_BLOQUE_MIN
+    intervalosBloques.push({
+      inicioMin: minActual,
+      finMin: minSiguiente,
+      inicio: new Date(fechaConsultada.getTime() + minActual * 60000),
+      fin: new Date(fechaConsultada.getTime() + minSiguiente * 60000),
+    })
+    minActual = minSiguiente
+  }
+
+  const recursosMapeados = recursos.map((recurso) => {
+    // Reservas activas dentro del horario del día consultado
     const reservasSolapadas = recurso.reservas
-      .map((rr: any) => rr.reserva)
-      .filter((reserva: any) => {
+      .map((rr) => rr.reserva)
+      .filter((reserva) => {
         if (reserva.fechaHoraCancelacion) return false
-        return reserva.fechaHoraInicio < fin && reserva.fechaHoraFin > inicio
+        return reserva.fechaHoraInicio < finDia && reserva.fechaHoraFin > inicioDia
       })
 
     // Desglose en bloques de 15 minutos
-    const bloques = intervalosBloques.map(({ inicio: bInicio, fin: bFin }) => {
-      // Valida si el bloque cae dentro de la disponibilidad semanal
-      const dentroDeHorario = recurso.disponibilidades.some((disp: any) => {
-        if (disp.diaSemana !== bInicio.getDay()) return false
-
-        const diaInicio = new Date(bInicio)
-        diaInicio.setHours(0, 0, 0, 0)
-
-        const rangoInicio = new Date(diaInicio.getTime() + disp.minutosInicio * 60000)
-        const rangoFin = new Date(diaInicio.getTime() + disp.minutosFin * 60000)
-
-        return bInicio >= rangoInicio && bFin <= rangoFin
-      })
+    const bloques = intervalosBloques.map(({ inicioMin, finMin, inicio: bInicio, fin: bFin }) => {
+      // Valida si el bloque cae dentro de la disponibilidad del recurso para ese día
+      const dentroDeHorario = recurso.disponibilidades.some(
+        (disp) => inicioMin >= disp.minutosInicio && finMin <= disp.minutosFin
+      )
 
       // Verifica bloqueo superpuesto con este bloque
-      const hayBloqueo = recurso.bloqueos.some((bloqueo: any) => {
+      const hayBloqueo = recurso.bloqueos.some((bloqueo) => {
         const bloqueoInicio = new Date(bloqueo.fechaHoraInicio)
         const bloqueoFin = bloqueo.fechaHoraFin ? new Date(bloqueo.fechaHoraFin) : null
         return bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
       })
 
       // Reservas activas que solapan este bloque de 15 minutos
-      const reservasBloque = reservasSolapadas.filter((reserva: any) => {
+      const reservasBloque = reservasSolapadas.filter((reserva) => {
         return reserva.fechaHoraInicio < bFin && reserva.fechaHoraFin > bInicio
       })
 
@@ -170,27 +168,22 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
       }
     })
 
-    // El recurso completo para todo el rango se considera disponible si todos sus bloques lo están
-    const disponible = bloques.length > 0 && bloques.every((b) => b.disponible)
-    const primerBloqueNoDisponible = bloques.find((b) => !b.disponible)
-    const motivoNoDisponible = primerBloqueNoDisponible ? primerBloqueNoDisponible.motivoNoDisponible : null
-
     const datosEspecificos = recurso.sala
       ? { ubicacion: recurso.sala.ubicacion }
-      : {
-        numeroSerie: recurso.notebook.numeroSerie,
-        marca: recurso.notebook.marca,
-        modelo: recurso.notebook.modelo,
-      }
+      : recurso.notebook
+        ? {
+          numeroSerie: recurso.notebook.numeroSerie,
+          marca: recurso.notebook.marca,
+          modelo: recurso.notebook.modelo,
+        }
+        : {}
 
     return {
       id: recurso.id,
       nombre: recurso.nombre,
       capacidad: recurso.capacidad,
       ...datosEspecificos,
-      disponible,
-      motivoNoDisponible,
-      horariosReservados: reservasSolapadas.map((reserva: any) => ({
+      horariosReservados: reservasSolapadas.map((reserva) => ({
         horaInicio: reserva.fechaHoraInicio.toISOString(),
         horaFin: reserva.fechaHoraFin.toISOString()
       })),
@@ -200,7 +193,7 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
 
   return {
     horarioEstablecimiento,
-    data,
+    recursos: recursosMapeados,
   }
 }
 
@@ -217,17 +210,26 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError('Debe seleccionar al menos un recurso')
   }
 
-  const { data: disponibilidad } = await consultarDisponibilidad({
-    fechaHoraInicio: input.fechaHoraInicio,
-    fechaHoraFin: input.fechaHoraFin,
+  const diaStr = input.fechaHoraInicio.split('T')[0]
+  const { recursos: disponibilidad } = await consultarDisponibilidad({
+    fecha: diaStr,
   })
-  const seleccionados = disponibilidad.filter((recurso: any) => recursoIds.includes(recurso.id))
+  const seleccionados = disponibilidad.filter((recurso) => recursoIds.includes(recurso.id))
 
   if (seleccionados.length !== recursoIds.length) {
     throw new DisponibilidadError('Uno o más recursos no existen')
   }
 
-  const noDisponibles = seleccionados.filter((recurso: any) => !recurso.disponible)
+  const noDisponibles = seleccionados.filter((recurso) => {
+    const bloquesRango = recurso.bloques.filter((b) => {
+      const bInicio = new Date(b.horaInicio)
+      const bFin = new Date(b.horaFin)
+      return bInicio < fin && bFin > inicio
+    })
+
+    return bloquesRango.length === 0 || bloquesRango.some((b) => !b.disponible)
+  })
+
   if (noDisponibles.length > 0) {
     throw new DisponibilidadError(
       `Los recursos no están disponibles: ${noDisponibles.map((recurso) => recurso.nombre).join(', ')}`
@@ -242,7 +244,7 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError('La fecha límite de check-in no es válida')
   }
 
-  return prisma.$transaction(async (tx: any) => {
+  return prisma.$transaction(async (tx) => {
     return tx.reserva.create({
       data: {
         usuarioId: input.usuarioId,
