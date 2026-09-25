@@ -5,8 +5,7 @@ const prisma = new PrismaClient()
 type TipoRecurso = 'SALA' | 'NOTEBOOK'
 
 type ConsultaDisponibilidadInput = {
-  fechaHoraInicio: string
-  fechaHoraFin: string
+  fecha: string
   tipo?: TipoRecurso
 }
 
@@ -19,7 +18,7 @@ export type CrearReservaInput = {
   observacion?: string
 }
 
-export class DisponibilidadError extends Error {}
+export class DisponibilidadError extends Error { }
 
 export async function consultarDisponibilidad(input: ConsultaDisponibilidadInput) {
   return consultarDisponibilidadPorTipo(input)
@@ -33,12 +32,36 @@ export async function consultarDisponibilidadNotebooks(input: Omit<ConsultaDispo
   return consultarDisponibilidadPorTipo({ ...input, tipo: 'NOTEBOOK' })
 }
 
-async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput) {
-  const inicio = new Date(input.fechaHoraInicio)
-  const fin = new Date(input.fechaHoraFin)
-  const diaSemana = inicio.getDay()
+const DURACION_BLOQUE_MIN = 15 // 15 minutos
 
-  const recursos: any[] = await prisma.recurso.findMany({
+async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput) {
+  const diaStr = input.fecha.split('T')[0]
+  const [año, mes, dia] = diaStr.split('-').map(Number)
+  const fechaConsultada = new Date(año, mes - 1, dia)
+  const diaSemana = fechaConsultada.getDay()
+
+  // Horarios de apertura y cierre del establecimiento para el día consultado
+  const disponibilidadesDia = await prisma.disponibilidad.findMany({
+    where: { diaSemana }
+  })
+
+  let minutosApertura = 480 // 08:00 por defecto
+  let minutosCierre = 1320   // 22:00 por defecto
+
+  if (disponibilidadesDia.length > 0) {
+    minutosApertura = Math.min(...disponibilidadesDia.map((d) => d.minutosInicio))
+    minutosCierre = Math.max(...disponibilidadesDia.map((d) => d.minutosFin))
+  }
+
+  const horarioEstablecimiento = {
+    minutosApertura,
+    minutosCierre,
+  }
+
+  const inicioDia = new Date(fechaConsultada.getTime() + minutosApertura * 60000)
+  const finDia = new Date(fechaConsultada.getTime() + minutosCierre * 60000)
+
+  const recursos = await prisma.recurso.findMany({
     where: input.tipo
       ? { [input.tipo === 'SALA' ? 'sala' : 'notebook']: { isNot: null } }
       : undefined,
@@ -47,24 +70,31 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
       notebook: true,
       disponibilidades: {
         where: {
-          diaSemana
-        }
+          diaSemana,
+        },
       },
       bloqueos: {
         where: {
           OR: [
             {
-              fechaHoraInicio: { lt: fin },
-              fechaHoraFin: { gt: inicio }
+              fechaHoraInicio: { lt: finDia },
+              fechaHoraFin: { gt: inicioDia }
             },
             {
-              fechaHoraInicio: { lte: inicio },
+              fechaHoraInicio: { lt: finDia },
               fechaHoraFin: null
             }
           ]
         }
       },
       reservas: {
+        where: {
+          reserva: {
+            fechaHoraCancelacion: null,
+            fechaHoraInicio: { lt: finDia },
+            fechaHoraFin: { gt: inicioDia }
+          }
+        },
         include: {
           reserva: true
         }
@@ -72,73 +102,99 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
     }
   })
 
-  return recursos.map((recurso: any) => {
-    // RF-15 / RF-17: valida si el rango solicitado cae dentro de la disponibilidad semanal.
-    const dentroDeHorario = recurso.disponibilidades.some((disponibilidad: any) => {
-      const diaInicio = new Date(inicio)
-      diaInicio.setHours(0, 0, 0, 0)
+  // Generar los intervalos de 15 minutos entre apertura y cierre del día
+  const intervalosBloques: { inicioMin: number; finMin: number; inicio: Date; fin: Date }[] = []
+  let minActual = minutosApertura
 
-      const rangoInicio = new Date(diaInicio.getTime() + disponibilidad.minutosInicio * 60000)
-      const rangoFin = new Date(diaInicio.getTime() + disponibilidad.minutosFin * 60000)
-
-      return inicio >= rangoInicio && fin <= rangoFin
+  while (minActual < minutosCierre) {
+    const minSiguiente = minActual + DURACION_BLOQUE_MIN
+    intervalosBloques.push({
+      inicioMin: minActual,
+      finMin: minSiguiente,
+      inicio: new Date(fechaConsultada.getTime() + minActual * 60000),
+      fin: new Date(fechaConsultada.getTime() + minSiguiente * 60000),
     })
+    minActual = minSiguiente
+  }
 
-    // RF-17: verifica si el recurso tiene un bloqueo que se superpone con el rango solicitado.
-    const hayBloqueo = recurso.bloqueos.some((bloqueo: any) => {
-      const bloqueoInicio = new Date(bloqueo.fechaHoraInicio)
-      const bloqueoFin = bloqueo.fechaHoraFin ? new Date(bloqueo.fechaHoraFin) : null
-
-      const seSolapa = bloqueoInicio < fin && (bloqueoFin ? bloqueoFin > inicio : true)
-      return seSolapa
-    })
-
-    // RF-16: cuenta reservas activas que solapan el rango solicitado y calcula cupos libres.
+  const recursosMapeados = recursos.map((recurso) => {
+    // Reservas activas dentro del horario del día consultado
     const reservasSolapadas = recurso.reservas
-      .map((rr: any) => rr.reserva)
-      .filter((reserva: any) => {
+      .map((rr) => rr.reserva)
+      .filter((reserva) => {
         if (reserva.fechaHoraCancelacion) return false
-        return reserva.fechaHoraInicio < fin && reserva.fechaHoraFin > inicio
+        return reserva.fechaHoraInicio < finDia && reserva.fechaHoraFin > inicioDia
       })
 
-    const ocupacion = reservasSolapadas.length
-    const cuposLibres = recurso.capacidad - ocupacion
+    // Desglose en bloques de 15 minutos
+    const bloques = intervalosBloques.map(({ inicioMin, finMin, inicio: bInicio, fin: bFin }) => {
+      // Valida si el bloque cae dentro de la disponibilidad del recurso para ese día
+      const dentroDeHorario = recurso.disponibilidades.some(
+        (disp) => inicioMin >= disp.minutosInicio && finMin <= disp.minutosFin
+      )
 
-    let motivoNoDisponible: 'fuera_de_horario' | 'bloqueado' | 'sin_cupos' | null = null
+      // Verifica bloqueo superpuesto con este bloque
+      const hayBloqueo = recurso.bloqueos.some((bloqueo) => {
+        const bloqueoInicio = new Date(bloqueo.fechaHoraInicio)
+        const bloqueoFin = bloqueo.fechaHoraFin ? new Date(bloqueo.fechaHoraFin) : null
+        return bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
+      })
 
-    if (!dentroDeHorario) {
-      motivoNoDisponible = 'fuera_de_horario'
-    } else if (hayBloqueo) {
-      motivoNoDisponible = 'bloqueado'
-    } else if (cuposLibres <= 0) {
-      motivoNoDisponible = 'sin_cupos'
-    }
+      // Reservas activas que solapan este bloque de 15 minutos
+      const reservasBloque = reservasSolapadas.filter((reserva) => {
+        return reserva.fechaHoraInicio < bFin && reserva.fechaHoraFin > bInicio
+      })
 
-    const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0
+      const ocupacion = reservasBloque.length
+      const cuposLibres = Math.max(0, recurso.capacidad - ocupacion)
+
+      let motivoNoDisponible: 'fuera_de_horario' | 'bloqueado' | 'sin_cupos' | null = null
+      if (!dentroDeHorario) {
+        motivoNoDisponible = 'fuera_de_horario'
+      } else if (hayBloqueo) {
+        motivoNoDisponible = 'bloqueado'
+      } else if (cuposLibres <= 0) {
+        motivoNoDisponible = 'sin_cupos'
+      }
+
+      const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0
+
+      return {
+        horaInicio: bInicio.toISOString(),
+        horaFin: bFin.toISOString(),
+        ocupacion,
+        disponible,
+        motivoNoDisponible,
+      }
+    })
 
     const datosEspecificos = recurso.sala
       ? { ubicacion: recurso.sala.ubicacion }
-      : {
+      : recurso.notebook
+        ? {
           numeroSerie: recurso.notebook.numeroSerie,
           marca: recurso.notebook.marca,
           modelo: recurso.notebook.modelo,
         }
+        : {}
 
     return {
       id: recurso.id,
       nombre: recurso.nombre,
       capacidad: recurso.capacidad,
       ...datosEspecificos,
-      ocupacion,
-      cuposLibres,
-      disponible,
-      motivoNoDisponible,
-      horariosReservados: reservasSolapadas.map((reserva: any) => ({
+      horariosReservados: reservasSolapadas.map((reserva) => ({
         horaInicio: reserva.fechaHoraInicio.toISOString(),
         horaFin: reserva.fechaHoraFin.toISOString()
-      }))
+      })),
+      bloques,
     }
   })
+
+  return {
+    horarioEstablecimiento,
+    recursos: recursosMapeados,
+  }
 }
 
 export async function crearReserva(input: CrearReservaInput) {
@@ -154,9 +210,9 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError('Debe seleccionar al menos un recurso')
   }
 
-  const disponibilidad = await consultarDisponibilidad({
-    fechaHoraInicio: input.fechaHoraInicio,
-    fechaHoraFin: input.fechaHoraFin,
+  const diaStr = input.fechaHoraInicio.split('T')[0]
+  const { recursos: disponibilidad } = await consultarDisponibilidad({
+    fecha: diaStr,
   })
   const seleccionados = disponibilidad.filter((recurso) => recursoIds.includes(recurso.id))
 
@@ -164,7 +220,16 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError('Uno o más recursos no existen')
   }
 
-  const noDisponibles = seleccionados.filter((recurso) => !recurso.disponible)
+  const noDisponibles = seleccionados.filter((recurso) => {
+    const bloquesRango = recurso.bloques.filter((b) => {
+      const bInicio = new Date(b.horaInicio)
+      const bFin = new Date(b.horaFin)
+      return bInicio < fin && bFin > inicio
+    })
+
+    return bloquesRango.length === 0 || bloquesRango.some((b) => !b.disponible)
+  })
+
   if (noDisponibles.length > 0) {
     throw new DisponibilidadError(
       `Los recursos no están disponibles: ${noDisponibles.map((recurso) => recurso.nombre).join(', ')}`

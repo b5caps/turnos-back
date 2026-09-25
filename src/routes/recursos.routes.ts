@@ -8,33 +8,43 @@ import {
 const recursos = new OpenAPIHono()
 
 const querySchema = z.object({
-  fechaHoraInicio: z.string().datetime({ offset: true, local: true }).openapi({
-    example: '2026-09-05T14:00:00',
+  fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato YYYY-MM-DD requerido').openapi({
+    example: '2026-09-05',
+    description: 'Fecha a consultar (YYYY-MM-DD)',
   }),
-  fechaHoraFin: z.string().datetime({ offset: true, local: true }).openapi({
-    example: '2026-09-05T16:00:00',
-  }),
+})
+
+const bloqueDisponibilidadSchema = z.object({
+  horaInicio: z.string(),
+  horaFin: z.string(),
+  ocupacion: z.number(),
+  disponible: z.boolean(),
+  motivoNoDisponible: z.enum(['fuera_de_horario', 'bloqueado', 'sin_cupos']).nullable(),
 })
 
 const disponibilidadBaseSchema = z.object({
   id: z.number(),
   nombre: z.string(),
   capacidad: z.number(),
-  ocupacion: z.number(),
-  cuposLibres: z.number(),
-  disponible: z.boolean(),
-  motivoNoDisponible: z.enum(['fuera_de_horario', 'bloqueado', 'sin_cupos']).nullable(),
   horariosReservados: z.array(z.object({ horaInicio: z.string(), horaFin: z.string() })),
+  bloques: z.array(bloqueDisponibilidadSchema),
+})
+
+const horarioEstablecimientoSchema = z.object({
+  minutosApertura: z.number().int().openapi({ example: 480 }),
+  minutosCierre: z.number().int().openapi({ example: 1320 }),
 })
 
 const salasResponseSchema = z.object({
-  data: z.array(disponibilidadBaseSchema.extend({
+  horarioEstablecimiento: horarioEstablecimientoSchema,
+  recursos: z.array(disponibilidadBaseSchema.extend({
     ubicacion: z.string(),
   })),
 })
 
 const notebooksResponseSchema = z.object({
-  data: z.array(disponibilidadBaseSchema.extend({
+  horarioEstablecimiento: horarioEstablecimientoSchema,
+  recursos: z.array(disponibilidadBaseSchema.extend({
     numeroSerie: z.string(),
     marca: z.string(),
     modelo: z.string(),
@@ -68,13 +78,13 @@ const disponibilidadNotebooksRoute = createRoute({
 recursos.openapi(disponibilidadSalasRoute, async (c) => {
   const params = c.req.valid('query')
   const resultado = await consultarDisponibilidadSalas(params)
-  return c.json({ data: resultado })
+  return c.json(resultado)
 })
 
 recursos.openapi(disponibilidadNotebooksRoute, async (c) => {
   const params = c.req.valid('query')
   const resultado = await consultarDisponibilidadNotebooks(params)
-  return c.json({ data: resultado })
+  return c.json(resultado)
 })
 
 export default recursos
