@@ -8,7 +8,7 @@ import {
 const recursos = new OpenAPIHono()
 
 const querySchema = z.object({
-  fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato YYYY-MM-DD requerido').openapi({
+  fecha: z.iso.date('Formato YYYY-MM-DD requerido').openapi({
     example: '2026-09-05',
     description: 'Fecha a consultar (YYYY-MM-DD)',
   }),
