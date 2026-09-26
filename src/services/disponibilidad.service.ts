@@ -35,8 +35,7 @@ export async function consultarDisponibilidadNotebooks(input: Omit<ConsultaDispo
 const DURACION_BLOQUE_MIN = 15 // 15 minutos
 
 async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput) {
-  const diaStr = input.fecha.split('T')[0]
-  const [año, mes, dia] = diaStr.split('-').map(Number)
+  const [año, mes, dia] = input.fecha.split('-').map(Number)
   const fechaConsultada = new Date(año, mes - 1, dia)
   const diaSemana = fechaConsultada.getDay()
 
