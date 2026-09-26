@@ -159,8 +159,8 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
       const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0
 
       return {
-        horaInicio: bInicio.toISOString(),
-        horaFin: bFin.toISOString(),
+        horaInicio: bInicio,
+        horaFin: bFin,
         ocupacion,
         disponible,
         motivoNoDisponible,
@@ -183,8 +183,8 @@ async function consultarDisponibilidadPorTipo(input: ConsultaDisponibilidadInput
       capacidad: recurso.capacidad,
       ...datosEspecificos,
       horariosReservados: reservasSolapadas.map((reserva) => ({
-        horaInicio: reserva.fechaHoraInicio.toISOString(),
-        horaFin: reserva.fechaHoraFin.toISOString()
+        horaInicio: reserva.fechaHoraInicio,
+        horaFin: reserva.fechaHoraFin
       })),
       bloques,
     }
@@ -221,9 +221,7 @@ export async function crearReserva(input: CrearReservaInput) {
 
   const noDisponibles = seleccionados.filter((recurso) => {
     const bloquesRango = recurso.bloques.filter((b) => {
-      const bInicio = new Date(b.horaInicio)
-      const bFin = new Date(b.horaFin)
-      return bInicio < fin && bFin > inicio
+      return b.horaInicio < fin && b.horaFin > inicio
     })
 
     return bloquesRango.length === 0 || bloquesRango.some((b) => !b.disponible)
