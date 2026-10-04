@@ -1,27 +1,13 @@
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import { PrismaClient } from '@prisma/client'
-import type { Rol, TipoDocumento } from '@prisma/client'
+import type { Usuario } from '@prisma/client'
+import type { RegistroInput } from '../schemas/auth.schema.js'
 
 const prisma = new PrismaClient()
 const SALT_ROUNDS = 12
 
-type DatosComunes = {
-  tipoDocumento: TipoDocumento
-  documento: string
-  nombre: string
-  apellido: string
-  email: string
-  telefono: string
-  password: string
-}
-
-export type RegistroInput = DatosComunes & (
-  | { rol: 'UTN'; legajo: string; docente: boolean; carrera?: string }
-  | { rol: 'EXTERNO'; localidad: string; provincia: string; organizacion: string }
-)
-
-function datosPublicos(usuario: { id: number; rol: Rol; nombre: string; apellido: string; email: string }) {
+function datosPublicos(usuario: Usuario) {
   return {
     id: usuario.id,
     rol: usuario.rol,
@@ -43,7 +29,7 @@ function configuracionJwt() {
   return { secreto, expiresIn }
 }
 
-function crearToken(usuario: { id: number; rol: Rol }, config = configuracionJwt()) {
+function crearToken(usuario: Usuario, config = configuracionJwt()) {
   return {
     token: jwt.sign({ rol: usuario.rol }, config.secreto, { subject: String(usuario.id), expiresIn: config.expiresIn }),
     expiresIn: config.expiresIn,

@@ -1,37 +1,9 @@
 import { Prisma } from '@prisma/client'
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { iniciarSesion, registrar } from '../services/auth.service.js'
+import { registroSchema } from '../schemas/auth.schema.js'
 
 const auth = new OpenAPIHono()
-
-const datosComunes = {
-  tipoDocumento: z.enum(['DNI', 'CUIL']),
-  documento: z.string().trim().min(1),
-  nombre: z.string().trim().min(1),
-  apellido: z.string().trim().min(1),
-  email: z.email().trim(),
-  telefono: z.string().trim().min(1),
-  password: z.string().min(8).refine(value => Buffer.byteLength(value, 'utf8') <= 72, {
-    message: 'La contraseña no puede superar 72 bytes',
-  }),
-}
-
-const registroSchema = z.discriminatedUnion('rol', [
-  z.object({
-    ...datosComunes,
-    rol: z.literal('UTN'),
-    legajo: z.string().trim().min(1),
-    docente: z.boolean(),
-    carrera: z.string().trim().min(1).optional(),
-  }).strict(),
-  z.object({
-    ...datosComunes,
-    rol: z.literal('EXTERNO'),
-    localidad: z.string().trim().min(1),
-    provincia: z.string().trim().min(1),
-    organizacion: z.string().trim().min(1),
-  }).strict(),
-])
 
 const loginSchema = z.object({
   email: z.email().trim(),
