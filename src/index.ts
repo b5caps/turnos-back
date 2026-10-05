@@ -1,9 +1,11 @@
+import 'dotenv/config'
 import { cors } from 'hono/cors'
 import { serve } from '@hono/node-server'
 import { OpenAPIHono } from '@hono/zod-openapi'
 import { swaggerUI } from '@hono/swagger-ui'
 import recursosRoutes from './routes/recursos.routes.js'
 import reservasRoutes from './routes/reservas.routes.js'
+import authRoutes from './routes/auth.routes.js'
 
 const app = new OpenAPIHono()
 
@@ -14,6 +16,7 @@ app.get('/', (c) => {
 
 app.route('/api/recursos', recursosRoutes)
 app.route('/api/reservas', reservasRoutes)
+app.route('/api/auth', authRoutes)
 
 app.doc('/doc', {
   openapi: '3.0.0',
