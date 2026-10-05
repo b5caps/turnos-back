@@ -35,7 +35,7 @@ model PerfilUTN {
   legajo               String   @unique
   docente              Boolean
   carrera              String?
-  ultimaSincronizacion DateTime?
+  ultimaSincronizacion DateTime
 }
 
 model PerfilExterno {

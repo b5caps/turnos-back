@@ -8,9 +8,6 @@ WHERE s."recursoId" = r."id";
 ALTER TABLE "Recurso" ALTER COLUMN "descripcion" DROP DEFAULT;
 ALTER TABLE "Sala" DROP COLUMN "descripcion";
 
--- Sin integración con SysAcad todavía no hay fecha real de sincronización.
-ALTER TABLE "PerfilUTN" ALTER COLUMN "ultimaSincronizacion" DROP NOT NULL;
-
 ALTER TABLE "Usuario" ADD COLUMN "passwordHash" TEXT;
 
 UPDATE "Usuario" AS u

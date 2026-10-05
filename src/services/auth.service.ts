@@ -54,7 +54,8 @@ export async function registrar(input: RegistroInput) {
         ? { perfilUTN: { create: {
           legajo: input.legajo.trim(),
           docente: input.docente,
-          carrera: input.carrera?.trim(),
+            carrera: input.carrera?.trim(),
+            ultimaSincronizacion: new Date().toISOString()
         } } }
         : { perfilExterno: { create: {
           localidad: input.localidad.trim(),
