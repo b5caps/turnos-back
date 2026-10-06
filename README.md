@@ -35,3 +35,17 @@ Las cuentas anteriores sin contraseña no pueden iniciar sesión hasta que se le
 En una base nueva, aplicar las migraciones con `pnpm exec prisma migrate deploy --schema prisma`.
 La base Railway configurada actualmente tiene otro historial y otra estructura de tablas:
 hay que conciliar esa base con el esquema del repositorio antes de aplicar migraciones allí.
+
+## Cancelación de Reservas
+
+- `PATCH /api/reservas/:id/cancelar`: Cancelar una reserva existente.
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Autorización**: El usuario autenticado debe ser el titular de la reserva (`usuarioId`) o poseer rol `ADMIN`.
+  - **Cuerpo opcional**: `{ "motivoCancelacion": "Motivo opcional" }`.
+  - **Reglas de negocio**:
+    - Retorna `404` si la reserva no existe.
+    - Retorna `403` si no es el dueño ni administrador.
+    - Retorna `409` si la reserva ya se encuentra cancelada.
+    - Retorna `400` si la reserva ya finalizó o ya se le realizó check-in.
+    - Retorna `200` con la reserva cancelada y libera inmediatamente la disponibilidad de los recursos.
+

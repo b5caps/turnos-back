@@ -41,6 +41,24 @@ function crearToken(usuario: Usuario, config = configuracionJwt()) {
   };
 }
 
+export interface TokenPayload {
+  id: number;
+  rol: Usuario["rol"];
+}
+
+export function verificarToken(token: string): TokenPayload {
+  const { secreto } = configuracionJwt();
+  const payload = jwt.verify(token, secreto) as jwt.JwtPayload & {
+    rol: Usuario["rol"];
+  };
+  const id = Number(payload.sub);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("Token inválido: subject inválido");
+  }
+
+  return { id, rol: payload.rol };
+}
+
 export async function registrar(input: RegistroInput) {
   // Verificar la configuración antes de crear la cuenta, para no dejar registros sin respuesta utilizable.
   const jwtConfig = configuracionJwt();

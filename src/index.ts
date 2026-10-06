@@ -18,6 +18,13 @@ app.route("/api/recursos", recursosRoutes);
 app.route("/api/reservas", reservasRoutes);
 app.route("/api/auth", authRoutes);
 
+app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
+  type: "http",
+  scheme: "bearer",
+  bearerFormat: "JWT",
+  description: "Token JWT obtenido de /api/auth/login",
+});
+
 app.doc("/doc", {
   openapi: "3.0.0",
   info: { version: "1.0.0", title: "GREB/SIREB API" },
