@@ -4,6 +4,7 @@ import { verificarToken, type TokenPayload } from "../services/auth.service.js";
 declare module "hono" {
   interface ContextVariableMap {
     usuario: TokenPayload;
+    token: string;
   }
 }
 
@@ -21,11 +22,13 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
   try {
     const usuario = verificarToken(token);
     c.set("usuario", usuario);
+    c.set("token", token);
     await next();
-  } catch {
-    return c.json(
-      { message: "Token de autenticación inválido o expirado" },
-      401,
-    );
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message === "Token revocado"
+        ? "Token de autenticación revocado"
+        : "Token de autenticación inválido o expirado";
+    return c.json({ message }, 401);
   }
 };

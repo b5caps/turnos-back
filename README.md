@@ -27,8 +27,11 @@ Las rutas están documentadas en `http://localhost:3000/docs`.
   UTN agrega `legajo`, `docente` (booleano) y opcionalmente `carrera`.
   EXTERNO agrega `localidad`, `provincia` y `organizacion`.
 - `POST /api/auth/login`: `{ "email": "usuario@ejemplo.com", "password": "contraseña" }`.
+- `POST /api/auth/logout`: Cerrar sesión e invalidar el token activo en el servidor.
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - Retorna `200` con `{ message: "Sesión cerrada exitosamente" }`. El token revocado es rechazado en solicitudes posteriores con `401`.
 
-Ambas rutas devuelven `{ usuario: { id, rol, nombre, apellido, email }, token, expiresIn }`.
+Ambas rutas de registro y login devuelven `{ usuario: { id, rol, nombre, apellido, email }, token, expiresIn }`.
 El JWT incluye el ID en `sub` y el rol. El registro público no crea administradores.
 Las cuentas anteriores sin contraseña no pueden iniciar sesión hasta que se les asigne una.
 
@@ -48,4 +51,3 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
     - Retorna `409` si la reserva ya se encuentra cancelada.
     - Retorna `400` si la reserva ya finalizó o ya se le realizó check-in.
     - Retorna `200` con la reserva cancelada y libera inmediatamente la disponibilidad de los recursos.
-

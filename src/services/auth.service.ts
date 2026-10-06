@@ -41,12 +41,47 @@ function crearToken(usuario: Usuario, config = configuracionJwt()) {
   };
 }
 
+// Almacén en memoria para tokens revocados: token -> fecha de expiración en ms
+const tokensRevocados = new Map<string, number>();
+
+function limpiarTokensExpirados() {
+  const ahora = Date.now();
+  for (const [token, expiracion] of tokensRevocados.entries()) {
+    if (expiracion <= ahora) {
+      tokensRevocados.delete(token);
+    }
+  }
+}
+
+export function estaRevocado(token: string): boolean {
+  const expiracion = tokensRevocados.get(token);
+  if (!expiracion) return false;
+  if (expiracion <= Date.now()) {
+    tokensRevocados.delete(token);
+    return false;
+  }
+  return true;
+}
+
+export function revocarToken(token: string): void {
+  limpiarTokensExpirados();
+  const decoded = jwt.decode(token) as jwt.JwtPayload | null;
+  const expiracionMs = decoded?.exp
+    ? decoded.exp * 1000
+    : Date.now() + 86400 * 1000;
+  tokensRevocados.set(token, expiracionMs);
+}
+
 export interface TokenPayload {
   id: number;
   rol: Usuario["rol"];
 }
 
 export function verificarToken(token: string): TokenPayload {
+  if (estaRevocado(token)) {
+    throw new Error("Token revocado");
+  }
+
   const { secreto } = configuracionJwt();
   const payload = jwt.verify(token, secreto) as jwt.JwtPayload & {
     rol: Usuario["rol"];
@@ -63,6 +98,29 @@ export async function registrar(input: RegistroInput) {
   // Verificar la configuración antes de crear la cuenta, para no dejar registros sin respuesta utilizable.
   const jwtConfig = configuracionJwt();
   const passwordHash = await bcrypt.hash(input.password, SALT_ROUNDS);
+
+  const perfilData =
+    input.rol === "UTN"
+      ? {
+          perfilUTN: {
+            create: {
+              legajo: input.legajo.trim(),
+              docente: input.docente,
+              carrera: input.carrera?.trim() ?? null,
+              ultimaSincronizacion: new Date(),
+            },
+          },
+        }
+      : {
+          perfilExterno: {
+            create: {
+              localidad: input.localidad.trim(),
+              provincia: input.provincia.trim(),
+              organizacion: input.organizacion.trim(),
+            },
+          },
+        };
+
   const usuario = await prisma.usuario.create({
     data: {
       tipoDocumento: input.tipoDocumento,
@@ -73,26 +131,7 @@ export async function registrar(input: RegistroInput) {
       telefono: input.telefono.trim(),
       rol: input.rol,
       passwordHash,
-      ...(input.rol === "UTN"
-        ? {
-            perfilUTN: {
-              create: {
-                legajo: input.legajo.trim(),
-                docente: input.docente,
-                carrera: input.carrera?.trim(),
-                ultimaSincronizacion: new Date().toISOString(),
-              },
-            },
-          }
-        : {
-            perfilExterno: {
-              create: {
-                localidad: input.localidad.trim(),
-                provincia: input.provincia.trim(),
-                organizacion: input.organizacion.trim(),
-              },
-            },
-          }),
+      ...perfilData,
     },
   });
 
