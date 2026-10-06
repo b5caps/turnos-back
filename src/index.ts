@@ -1,29 +1,29 @@
-import 'dotenv/config'
-import { cors } from 'hono/cors'
-import { serve } from '@hono/node-server'
-import { OpenAPIHono } from '@hono/zod-openapi'
-import { swaggerUI } from '@hono/swagger-ui'
-import recursosRoutes from './routes/recursos.routes.js'
-import reservasRoutes from './routes/reservas.routes.js'
-import authRoutes from './routes/auth.routes.js'
+import "dotenv/config";
+import { cors } from "hono/cors";
+import { serve } from "@hono/node-server";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { swaggerUI } from "@hono/swagger-ui";
+import recursosRoutes from "./routes/recursos.routes.js";
+import reservasRoutes from "./routes/reservas.routes.js";
+import authRoutes from "./routes/auth.routes.js";
 
-const app = new OpenAPIHono()
+const app = new OpenAPIHono();
 
-app.use("/*", cors())
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
-})
+app.use("/*", cors());
+app.get("/", (c) => {
+  return c.text("Hello Hono!");
+});
 
-app.route('/api/recursos', recursosRoutes)
-app.route('/api/reservas', reservasRoutes)
-app.route('/api/auth', authRoutes)
+app.route("/api/recursos", recursosRoutes);
+app.route("/api/reservas", reservasRoutes);
+app.route("/api/auth", authRoutes);
 
-app.doc('/doc', {
-  openapi: '3.0.0',
-  info: { version: '1.0.0', title: 'GREB/SIREB API' },
-})
+app.doc("/doc", {
+  openapi: "3.0.0",
+  info: { version: "1.0.0", title: "GREB/SIREB API" },
+});
 
-app.get('/docs', swaggerUI({ url: '/doc' }))
+app.get("/docs", swaggerUI({ url: "/doc" }));
 
 serve(
   {
@@ -31,7 +31,7 @@ serve(
     port: 3000,
   },
   (info) => {
-    console.log(`Server is running on http://localhost:${info.port}`)
-    console.log(`Docs disponibles en http://localhost:${info.port}/docs`)
-  }
-)
+    console.log(`Server is running on http://localhost:${info.port}`);
+    console.log(`Docs disponibles en http://localhost:${info.port}/docs`);
+  },
+);
