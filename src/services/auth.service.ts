@@ -5,7 +5,7 @@ import type { Usuario } from "@prisma/client";
 import type { RegistroInput } from "../schemas/auth.schema.js";
 
 const prisma = new PrismaClient();
-const SALT_ROUNDS = 12;
+export const SALT_ROUNDS = 12;
 
 function datosPublicos(usuario: Usuario) {
   return {
