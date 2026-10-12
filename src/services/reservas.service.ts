@@ -1,5 +1,8 @@
-import { PrismaClient } from "@prisma/client";
-import type { CancelarReservaInput } from "../schemas/reservas.schema.js";
+import { PrismaClient, type Prisma } from "@prisma/client";
+import type {
+  CancelarReservaInput,
+  ListarReservasQuery,
+} from "../schemas/reservas.schema.js";
 import type { TokenPayload } from "./auth.service.js";
 
 const prisma = new PrismaClient();
@@ -8,6 +11,55 @@ export class ReservaNotFoundError extends Error {}
 export class ReservaConflictError extends Error {}
 export class ReservaForbiddenError extends Error {}
 export class ReservaBusinessError extends Error {}
+
+export async function listarReservas(
+  filtros: ListarReservasQuery,
+  usuarioAuth: TokenPayload,
+) {
+  const where: Prisma.ReservaWhereInput = {};
+
+  if (usuarioAuth.rol === "ADMIN") {
+    if (filtros.usuarioId) {
+      where.usuarioId = filtros.usuarioId;
+    }
+  } else {
+    where.usuarioId = usuarioAuth.id;
+  }
+
+  const ahora = new Date();
+
+  if (filtros.estado === "activas") {
+    where.fechaHoraCancelacion = null;
+    where.fechaHoraFin = { gt: ahora };
+  } else if (filtros.estado === "canceladas") {
+    where.fechaHoraCancelacion = { not: null };
+  } else if (filtros.estado === "finalizadas") {
+    where.fechaHoraCancelacion = null;
+    where.fechaHoraFin = { lte: ahora };
+  }
+
+  return prisma.reserva.findMany({
+    where,
+    orderBy: {
+      fechaHoraInicio: "desc",
+    },
+    include: {
+      recursos: {
+        include: {
+          recurso: true,
+        },
+      },
+      usuario: {
+        select: {
+          id: true,
+          nombre: true,
+          apellido: true,
+          email: true,
+        },
+      },
+    },
+  });
+}
 
 export async function resolverTitularReserva(
   usuarioIdPropuesto: number | undefined,

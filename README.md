@@ -40,6 +40,16 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
 
 ## Reservas
 
+- `GET /api/reservas`: Listar reservas para el usuario autenticado.
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Query params opcionales**:
+    - `estado`: `activas`, `canceladas`, `finalizadas` o `todas`.
+    - `usuarioId`: ID del usuario a consultar (solo permitido para usuarios con rol `ADMIN`).
+  - **Reglas de negocio**:
+    - Usuarios comunes (`UTN` / `EXTERNO`): Reciben únicamente sus propias reservas.
+    - Administradores (`ADMIN`): Reciben todas las reservas o las del `usuarioId` indicado.
+  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`.
+
 - `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11).
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Titular de la reserva**:
