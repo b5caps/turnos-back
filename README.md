@@ -39,6 +39,31 @@ En una base nueva, aplicar las migraciones con `pnpm exec prisma migrate deploy 
 La base Railway configurada actualmente tiene otro historial y otra estructura de tablas:
 hay que conciliar esa base con el esquema del repositorio antes de aplicar migraciones allí.
 
+## Reservas
+
+- `GET /api/reservas`: Listar reservas para el usuario autenticado.
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Query params opcionales**:
+    - `estado`: `activas`, `canceladas`, `finalizadas` o `todas`.
+    - `usuarioId`: ID del usuario a consultar (solo permitido para usuarios con rol `ADMIN`).
+  - **Reglas de negocio**:
+    - Usuarios comunes (`UTN` / `EXTERNO`): Reciben únicamente sus propias reservas.
+    - Administradores (`ADMIN`): Reciben todas las reservas o las del `usuarioId` indicado.
+  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`.
+
+- `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11).
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Titular de la reserva**:
+    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`.
+    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre (ej. reserva institucional / bloqueo de periodo determinado) o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "..." }` (`usuarioId` es opcional).
+  - **Reglas de negocio**:
+    - Retorna `201` con los datos de la reserva creada.
+    - Retorna `400` si el rango horario es inválido o los recursos no están disponibles.
+    - Retorna `401` si no está autenticado o el token es inválido.
+    - Retorna `403` si un usuario no administrador intenta reservar a nombre de otro.
+    - Retorna `404` si el `usuarioId` destino indicado por un administrador no existe.
+
 ## Cancelación de Reservas
 
 - `PATCH /api/reservas/:id/cancelar`: Cancelar una reserva existente.

@@ -25,11 +25,21 @@ export const cancelarReservaBodySchema = z.object({
 export const reservaDetalleSchema = z.object({
   id: z.number(),
   usuarioId: z.number(),
+  usuario: z
+    .object({
+      id: z.number(),
+      nombre: z.string(),
+      apellido: z.string(),
+      email: z.string(),
+    })
+    .optional(),
   fechaHoraInicio: z.string(),
   fechaHoraFin: z.string(),
   fechaLimiteCheckIn: z.string(),
   fechaHoraCancelacion: z.string().nullable(),
   motivoCancelacion: z.string().nullable(),
+  fechaHoraCheckIn: z.string().nullable().optional(),
+  fechaHoraCheckOut: z.string().nullable().optional(),
   observacion: z.string().nullable(),
   recursos: z.array(
     z.object({
@@ -42,6 +52,38 @@ export const reservaDetalleSchema = z.object({
   ),
 });
 
+export const listarReservasQuerySchema = z.object({
+  usuarioId: z.coerce
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .openapi({
+      param: {
+        name: "usuarioId",
+        in: "query",
+      },
+      description: "Filtrar por usuario (solo disponible para administradores)",
+      example: 1,
+    }),
+  estado: z
+    .enum(["todas", "activas", "canceladas", "finalizadas"])
+    .optional()
+    .openapi({
+      param: {
+        name: "estado",
+        in: "query",
+      },
+      description:
+        "Filtrar por estado de la reserva (activas, canceladas, finalizadas, todas)",
+      example: "activas",
+    }),
+});
+
+export const listarReservasResponseSchema = z.object({
+  data: z.array(reservaDetalleSchema),
+});
+
 export const cancelarReservaResponseSchema = z.object({
   data: reservaDetalleSchema,
 });
@@ -51,3 +93,5 @@ export const errorSchema = z.object({
 });
 
 export type CancelarReservaInput = z.infer<typeof cancelarReservaBodySchema>;
+export type ListarReservasQuery = z.infer<typeof listarReservasQuerySchema>;
+

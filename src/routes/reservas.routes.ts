@@ -5,6 +5,8 @@ import {
 } from "../services/disponibilidad.service.js";
 import {
   cancelarReserva,
+  listarReservas,
+  resolverTitularReserva,
   ReservaBusinessError,
   ReservaConflictError,
   ReservaForbiddenError,
@@ -15,10 +17,39 @@ import {
   cancelarReservaParamsSchema,
   cancelarReservaResponseSchema,
   errorSchema,
+  listarReservasQuerySchema,
+  listarReservasResponseSchema,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const reservas = new OpenAPIHono();
+
+const listarReservasRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Reservas"],
+  summary: "Listar reservas",
+  description:
+    "Lista las reservas del usuario autenticado. Los administradores pueden ver todas las reservas y filtrar por usuarioId.",
+  security: [{ Bearer: [] }],
+  request: {
+    query: listarReservasQuerySchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: listarReservasResponseSchema,
+        },
+      },
+      description: "Lista de reservas obtenida exitosamente",
+    },
+    401: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autenticado o token no provisto/inválido",
+    },
+  },
+});
 
 const reservaRequestSchema = z.object({
   usuarioId: z.number().int().positive(),
@@ -73,6 +104,32 @@ const crearReservaRoute = createRoute({
     },
     400: { description: "Solicitud inválida o recursos no disponibles" },
   },
+});
+
+reservas.use("*", requireAuth);
+
+reservas.openapi(listarReservasRoute, async (c) => {
+  const usuarioAuth = c.get("usuario");
+  const query = c.req.valid("query");
+
+  const lista = await listarReservas(query, usuarioAuth);
+
+  return c.json(
+    {
+      data: lista.map((reserva) => ({
+        ...reserva,
+        fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
+        fechaHoraFin: reserva.fechaHoraFin.toISOString(),
+        fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+        fechaHoraCancelacion:
+          reserva.fechaHoraCancelacion?.toISOString() ?? null,
+        fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
+        fechaHoraCheckOut: reserva.fechaHoraCheckOut?.toISOString() ?? null,
+        recursos: reserva.recursos,
+      })),
+    },
+    200,
+  );
 });
 
 reservas.openapi(crearReservaRoute, async (c) => {
