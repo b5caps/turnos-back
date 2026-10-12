@@ -5,6 +5,8 @@ import {
 } from "../services/disponibilidad.service.js";
 import {
   cancelarReserva,
+  listarReservas,
+  resolverTitularReserva,
   ReservaBusinessError,
   ReservaConflictError,
   ReservaForbiddenError,
@@ -15,13 +17,50 @@ import {
   cancelarReservaParamsSchema,
   cancelarReservaResponseSchema,
   errorSchema,
+  listarReservasQuerySchema,
+  listarReservasResponseSchema,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const reservas = new OpenAPIHono();
 
+const listarReservasRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Reservas"],
+  summary: "Listar reservas",
+  description:
+    "Lista las reservas del usuario autenticado. Los administradores pueden ver todas las reservas y filtrar por usuarioId.",
+  security: [{ Bearer: [] }],
+  request: {
+    query: listarReservasQuerySchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: listarReservasResponseSchema,
+        },
+      },
+      description: "Lista de reservas obtenida exitosamente",
+    },
+    401: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autenticado o token no provisto/inválido",
+    },
+  },
+});
+
 const reservaRequestSchema = z.object({
-  usuarioId: z.number().int().positive(),
+  usuarioId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .openapi({
+      description:
+        "ID del usuario (opcional; administradores pueden especificarlo para reservar en su nombre)",
+    }),
   recursoIds: z.array(z.number().int().positive()).min(1),
   fechaHoraInicio: z.string().datetime({ offset: true, local: true }),
   fechaHoraFin: z.string().datetime({ offset: true, local: true }),
@@ -55,6 +94,9 @@ const crearReservaRoute = createRoute({
   path: "/",
   tags: ["Reservas"],
   summary: "Reservar un espacio y sus recursos",
+  description:
+    "Crea una reserva de recursos. Los usuarios comunes reservan a su propio nombre. Los administradores pueden además reservar en nombre de otros usuarios o para periodos determinados a su propio nombre.",
+  security: [{ Bearer: [] }],
   request: {
     body: {
       content: {
@@ -71,13 +113,62 @@ const crearReservaRoute = createRoute({
       },
       description: "Reserva creada",
     },
-    400: { description: "Solicitud inválida o recursos no disponibles" },
+    400: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Solicitud inválida o recursos no disponibles",
+    },
+    401: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autenticado o token no provisto/inválido",
+    },
+    403: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autorizado para reservar en nombre de otro usuario",
+    },
+    404: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "El usuario especificado no existe",
+    },
   },
+});
+
+reservas.use("*", requireAuth);
+
+reservas.openapi(listarReservasRoute, async (c) => {
+  const usuarioAuth = c.get("usuario");
+  const query = c.req.valid("query");
+
+  const lista = await listarReservas(query, usuarioAuth);
+
+  return c.json(
+    {
+      data: lista.map((reserva) => ({
+        ...reserva,
+        fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
+        fechaHoraFin: reserva.fechaHoraFin.toISOString(),
+        fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+        fechaHoraCancelacion:
+          reserva.fechaHoraCancelacion?.toISOString() ?? null,
+        fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
+        fechaHoraCheckOut: reserva.fechaHoraCheckOut?.toISOString() ?? null,
+        recursos: reserva.recursos,
+      })),
+    },
+    200,
+  );
 });
 
 reservas.openapi(crearReservaRoute, async (c) => {
   try {
-    const reserva = await crearReserva(c.req.valid("json"));
+    const usuarioAuth = c.get("usuario");
+    const body = c.req.valid("json");
+
+    const titularId = await resolverTitularReserva(body.usuarioId, usuarioAuth);
+
+    const reserva = await crearReserva({
+      ...body,
+      usuarioId: titularId,
+    });
 
     return c.json(
       {
@@ -92,6 +183,12 @@ reservas.openapi(crearReservaRoute, async (c) => {
       201,
     );
   } catch (error) {
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
+    }
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
     if (error instanceof DisponibilidadError) {
       return c.json({ message: error.message }, 400);
     }
@@ -146,8 +243,6 @@ const cancelarReservaRoute = createRoute({
     },
   },
 });
-
-reservas.use("/:id/cancelar", requireAuth);
 
 reservas.openapi(cancelarReservaRoute, async (c) => {
   try {
