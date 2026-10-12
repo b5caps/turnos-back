@@ -12,7 +12,7 @@ const auth = new OpenAPIHono();
 
 const loginSchema = z
   .object({
-    email: z.email().trim(),
+    username: z.string().trim(),
     password: z.string().min(1),
   })
   .strict();
@@ -117,7 +117,7 @@ auth.openapi(registroRoute, async (c) => {
 
 auth.openapi(loginRoute, async (c) => {
   const sesion = await iniciarSesion(
-    c.req.valid("json").email,
+    c.req.valid("json").username,
     c.req.valid("json").password,
   );
   if (!sesion) return c.json({ message: "Credenciales inválidas" }, 401);

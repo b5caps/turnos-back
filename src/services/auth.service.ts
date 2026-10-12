@@ -139,9 +139,21 @@ export async function registrar(input: RegistroInput) {
 }
 
 export async function iniciarSesion(email: string, password: string) {
-  const usuario = await prisma.usuario.findUnique({
-    where: { email: email.trim().toLowerCase() },
-  });
+  let usuario =
+    (await prisma.usuario.findUnique({
+      where: { email: email.trim().toLowerCase() },
+    })) ?? undefined;
+
+  if (!usuario) {
+    const utn = await prisma.perfilUTN.findUnique({
+      where: { legajo: email.trim().toLowerCase() },
+      include: {
+        usuario: true,
+      },
+    });
+    usuario = utn?.usuario;
+  }
+
   if (
     !usuario?.passwordHash ||
     !(await bcrypt.compare(password, usuario.passwordHash))
