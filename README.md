@@ -54,9 +54,9 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
 - `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11) con Hold temporal de 10 minutos.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Titular de la reserva**:
-    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre. Inician en estado de reserva temporal ("Hold" de 10 minutos) que debe confirmarse posteriormente.
-    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o de terceros, y opcionalmente puede enviar `"confirmarInmediato": true` para omitir el hold y confirmarla directamente.
-  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "...", "confirmarInmediato": false }`.
+    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`. Inician en estado de reserva temporal ("Hold" de 10 minutos) que debe confirmarse posteriormente.
+    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o en nombre de otro usuario especificando `usuarioId` en el cuerpo, y opcionalmente puede enviar `"confirmarInmediato": true` para omitir el hold y confirmarla directamente.
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "...", "confirmarInmediato": false }` (`usuarioId` y `fechaLimiteCheckIn` son opcionales; el backend calcula automáticamente la fecha límite de check-in con 15 minutos de tolerancia posterior al inicio).
   - **Reglas de negocio**:
     - Retorna `201` con la reserva en estado Hold (o confirmada).
     - Retorna `409` si el recurso ya fue apartado o reservado por otro usuario concurrente (protegido por `SELECT ... FOR UPDATE`).
