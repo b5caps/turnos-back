@@ -99,28 +99,6 @@ export async function registrar(input: RegistroInput) {
   const jwtConfig = configuracionJwt();
   const passwordHash = await bcrypt.hash(input.password, SALT_ROUNDS);
 
-  const perfilData =
-    input.rol === "UTN"
-      ? {
-          perfilUTN: {
-            create: {
-              legajo: input.legajo.trim(),
-              docente: input.docente,
-              carrera: input.carrera?.trim() ?? null,
-              ultimaSincronizacion: new Date(),
-            },
-          },
-        }
-      : {
-          perfilExterno: {
-            create: {
-              localidad: input.localidad.trim(),
-              provincia: input.provincia.trim(),
-              organizacion: input.organizacion.trim(),
-            },
-          },
-        };
-
   const usuario = await prisma.usuario.create({
     data: {
       tipoDocumento: input.tipoDocumento,
@@ -129,9 +107,15 @@ export async function registrar(input: RegistroInput) {
       apellido: input.apellido.trim(),
       email: input.email.trim().toLowerCase(),
       telefono: input.telefono.trim(),
-      rol: input.rol,
+      rol: "EXTERNO",
       passwordHash,
-      ...perfilData,
+      perfilExterno: {
+        create: {
+          localidad: input.localidad.trim(),
+          provincia: input.provincia.trim(),
+          organizacion: input.organizacion.trim(),
+        },
+      },
     },
   });
 

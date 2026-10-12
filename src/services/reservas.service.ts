@@ -9,6 +9,35 @@ export class ReservaConflictError extends Error {}
 export class ReservaForbiddenError extends Error {}
 export class ReservaBusinessError extends Error {}
 
+export async function resolverTitularReserva(
+  usuarioIdPropuesto: number | undefined,
+  usuarioAuth: TokenPayload,
+): Promise<number> {
+  if (
+    usuarioIdPropuesto !== undefined &&
+    usuarioIdPropuesto !== usuarioAuth.id
+  ) {
+    if (usuarioAuth.rol !== "ADMIN") {
+      throw new ReservaForbiddenError(
+        "Solo los administradores pueden crear reservas en nombre de otros usuarios",
+      );
+    }
+
+    const usuarioExiste = await prisma.usuario.findUnique({
+      where: { id: usuarioIdPropuesto },
+      select: { id: true },
+    });
+
+    if (!usuarioExiste) {
+      throw new ReservaNotFoundError("El usuario especificado no existe");
+    }
+
+    return usuarioIdPropuesto;
+  }
+
+  return usuarioAuth.id;
+}
+
 export async function cancelarReserva(
   id: number,
   input: CancelarReservaInput | undefined,
