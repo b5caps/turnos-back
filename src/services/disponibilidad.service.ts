@@ -39,6 +39,14 @@ export async function consultarDisponibilidadNotebooks(
 }
 
 const DURACION_BLOQUE_MIN = 15; // 15 minutos
+export const MINUTOS_TOLERANCIA_CHECK_IN = 15; // 15 minutos de tolerancia para check-in
+
+export function calcularFechaLimiteCheckIn(inicio: Date, fin: Date): Date {
+  const limite = new Date(
+    inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
+  );
+  return limite > fin ? new Date(fin.getTime()) : limite;
+}
 
 async function consultarDisponibilidadPorTipo(
   input: ConsultaDisponibilidadInput,
@@ -268,15 +276,30 @@ export async function crearReserva(input: CrearReservaInput) {
     );
   }
 
+  const fechaLimiteCalculada = calcularFechaLimiteCheckIn(inicio, fin);
+
   const fechaLimiteCheckIn = input.fechaLimiteCheckIn
     ? new Date(input.fechaLimiteCheckIn)
-    : inicio;
+    : fechaLimiteCalculada;
+
+  if (Number.isNaN(fechaLimiteCheckIn.getTime())) {
+    throw new DisponibilidadError("La fecha límite de check-in no es válida");
+  }
+
+  const limiteMaximoTolerancia = new Date(
+    Math.min(
+      inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
+      fin.getTime(),
+    ),
+  );
 
   if (
-    Number.isNaN(fechaLimiteCheckIn.getTime()) ||
-    fechaLimiteCheckIn > inicio
+    fechaLimiteCheckIn < inicio ||
+    fechaLimiteCheckIn > limiteMaximoTolerancia
   ) {
-    throw new DisponibilidadError("La fecha límite de check-in no es válida");
+    throw new DisponibilidadError(
+      `La fecha límite de check-in debe situarse entre el inicio del turno y hasta ${MINUTOS_TOLERANCIA_CHECK_IN} minutos posteriores (tolerancia máxima sin exceder el fin de la reserva)`,
+    );
   }
 
   return prisma.$transaction(async (tx) => {
