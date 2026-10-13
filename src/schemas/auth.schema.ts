@@ -36,5 +36,28 @@ export const registroSchema = z
   })
   .strict();
 
+export const loginSchema = z
+  .object({
+    username: z
+      .string()
+      .trim()
+      .optional()
+      .openapi({
+        example: "usuario@ejemplo.com",
+        description: "Email del usuario externo o legajo/email de UTN",
+      }),
+    email: z
+      .string()
+      .trim()
+      .optional()
+      .openapi({
+        example: "usuario@ejemplo.com",
+        description: "Email del usuario externo o de UTN",
+      }),
+    password: z.string().min(1),
+  })
+  .strict();
+
 export type RegistroInput = z.infer<typeof registroSchema>;
+export type LoginInput = z.infer<typeof loginSchema>;
 

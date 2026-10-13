@@ -5,32 +5,10 @@ import {
   registrar,
   revocarToken,
 } from "../services/auth.service.js";
-import { registroSchema } from "../schemas/auth.schema.js";
+import { loginSchema, registroSchema } from "../schemas/auth.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const auth = new OpenAPIHono();
-
-const loginSchema = z
-  .object({
-    username: z
-      .string()
-      .trim()
-      .optional()
-      .openapi({
-        example: "usuario@ejemplo.com",
-        description: "Email del usuario externo o legajo/email de UTN",
-      }),
-    email: z
-      .string()
-      .trim()
-      .optional()
-      .openapi({
-        example: "usuario@ejemplo.com",
-        description: "Email del usuario externo o de UTN",
-      }),
-    password: z.string().min(1),
-  })
-  .strict();
 
 const sesionSchema = z.object({
   usuario: z.object({
