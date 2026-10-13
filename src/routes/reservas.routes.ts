@@ -106,7 +106,7 @@ const crearReservaRoute = createRoute({
   tags: ["Reservas"],
   summary: "Reservar un espacio y sus recursos",
   description:
-    "Crea una reserva de recursos. Para usuarios comunes inicia en estado de reserva temporal (Hold de 10 min) y requiere confirmación posterior. Los administradores pueden confirmar de forma inmediata.",
+    "Crea una reserva de recursos. Para usuarios comunes inicia en estado de reserva temporal (Hold de 10 min) y requiere confirmación posterior. Los administradores pueden además reservar en nombre de otros usuarios o confirmar de forma inmediata.",
   security: [{ Bearer: [] }],
   request: {
     body: {
@@ -362,4 +362,3 @@ reservas.openapi(cancelarReservaRoute, async (c) => {
 });
 
 export default reservas;
-

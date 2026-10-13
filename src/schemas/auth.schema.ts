@@ -36,4 +36,20 @@ export const registroSchema = z.discriminatedUnion("rol", [
     .strict(),
 ]);
 
+export const loginSchema = z
+  .object({
+    username: z
+      .string()
+      .trim()
+      .min(1)
+      .openapi({
+        example: "usuario@ejemplo.com",
+        description: "Email del usuario o legajo de UTN",
+      }),
+    password: z.string().min(1),
+  })
+  .strict();
+
 export type RegistroInput = z.infer<typeof registroSchema>;
+export type LoginInput = z.infer<typeof loginSchema>;
+
