@@ -5,17 +5,10 @@ import {
   registrar,
   revocarToken,
 } from "../services/auth.service.js";
-import { registroSchema } from "../schemas/auth.schema.js";
+import { loginSchema, registroSchema } from "../schemas/auth.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const auth = new OpenAPIHono();
-
-const loginSchema = z
-  .object({
-    username: z.string().trim(),
-    password: z.string().min(1),
-  })
-  .strict();
 
 const sesionSchema = z.object({
   usuario: z.object({
@@ -60,7 +53,7 @@ const loginRoute = createRoute({
   method: "post",
   path: "/login",
   tags: ["Autenticación"],
-  summary: "Iniciar sesión con email y contraseña",
+  summary: "Iniciar sesión con email/legajo y contraseña",
   request: {
     body: { content: { "application/json": { schema: loginSchema } } },
   },
@@ -116,10 +109,8 @@ auth.openapi(registroRoute, async (c) => {
 });
 
 auth.openapi(loginRoute, async (c) => {
-  const sesion = await iniciarSesion(
-    c.req.valid("json").username,
-    c.req.valid("json").password,
-  );
+  const { username, password } = c.req.valid("json");
+  const sesion = await iniciarSesion(username, password);
   if (!sesion) return c.json({ message: "Credenciales inválidas" }, 401);
   return c.json(sesion, 200);
 });

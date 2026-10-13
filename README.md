@@ -26,7 +26,7 @@ Las rutas están documentadas en `http://localhost:3000/docs`.
   máximo 72 bytes).
   UTN agrega `legajo`, `docente` (booleano) y opcionalmente `carrera`.
   EXTERNO agrega `localidad`, `provincia` y `organizacion`.
-- `POST /api/auth/login`: `{ "email": "usuario@ejemplo.com", "password": "contraseña" }`.
+- `POST /api/auth/login`: `{ "username": "email o legajo", "password": "contraseña" }`.
 - `POST /api/auth/logout`: Cerrar sesión e invalidar el token activo en el servidor.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - Retorna `200` con `{ message: "Sesión cerrada exitosamente" }`. El token revocado es rechazado en solicitudes posteriores con `401`.

@@ -92,6 +92,17 @@ export const errorSchema = z.object({
   message: z.string(),
 });
 
+/** Respuesta de error OpenAPI con el formato `{ message }`. */
+export const errorResponse = (description: string) => ({
+  content: { "application/json": { schema: errorSchema } },
+  description,
+});
+
+/** Respuesta 401 común a todas las rutas que requieren autenticación. */
+export const unauthorizedResponse = errorResponse(
+  "No autenticado o token no provisto/inválido",
+);
+
 export type CancelarReservaInput = z.infer<typeof cancelarReservaBodySchema>;
 export type ListarReservasQuery = z.infer<typeof listarReservasQuerySchema>;
 
