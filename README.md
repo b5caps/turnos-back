@@ -20,19 +20,18 @@ Configurar `DATABASE_URL` y `JWT_SECRET` en `.env`. Opcionalmente,
 `JWT_EXPIRES_IN_SECONDS` define la duración del token (por defecto, 86400 segundos).
 Las rutas están documentadas en `http://localhost:3000/docs`.
 
-- `POST /api/auth/registro`: registro propio de usuarios `UTN` o `EXTERNO`.
-  Campos comunes: `rol`, `tipoDocumento` (`DNI` o `CUIL`), `documento`,
-  `nombre`, `apellido`, `email`, `telefono` y `password` (mínimo 8 caracteres,
-  máximo 72 bytes).
-  UTN agrega `legajo`, `docente` (booleano) y opcionalmente `carrera`.
-  EXTERNO agrega `localidad`, `provincia` y `organizacion`.
-- `POST /api/auth/login`: `{ "email": "usuario@ejemplo.com", "password": "contraseña" }`.
+- `POST /api/auth/registro`: registro propio exclusivo para usuarios `EXTERNO`.
+  Campos: `tipoDocumento` (`DNI` o `CUIL`), `documento`, `nombre`, `apellido`,
+  `email`, `telefono`, `password` (mínimo 8 caracteres, máximo 72 bytes),
+  `localidad`, `provincia` y `organizacion`.
+  (Los usuarios pertenecientes a UTN no se registran públicamente; provienen del padrón institucional).
+- `POST /api/auth/login`: `{ "email": "usuario@ejemplo.com", "password": "contraseña" }` o `{ "username": "legajo", "password": "contraseña" }`.
 - `POST /api/auth/logout`: Cerrar sesión e invalidar el token activo en el servidor.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - Retorna `200` con `{ message: "Sesión cerrada exitosamente" }`. El token revocado es rechazado en solicitudes posteriores con `401`.
 
 Ambas rutas de registro y login devuelven `{ usuario: { id, rol, nombre, apellido, email }, token, expiresIn }`.
-El JWT incluye el ID en `sub` y el rol. El registro público no crea administradores.
+El JWT incluye el ID en `sub` y el rol. El registro público solo crea usuarios externos y no permite crear administradores.
 Las cuentas anteriores sin contraseña no pueden iniciar sesión hasta que se les asigne una.
 
 En una base nueva, aplicar las migraciones con `pnpm exec prisma migrate deploy --schema prisma`.

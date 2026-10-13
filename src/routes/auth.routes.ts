@@ -5,17 +5,10 @@ import {
   registrar,
   revocarToken,
 } from "../services/auth.service.js";
-import { registroSchema } from "../schemas/auth.schema.js";
+import { loginSchema, registroSchema } from "../schemas/auth.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const auth = new OpenAPIHono();
-
-const loginSchema = z
-  .object({
-    username: z.string().trim(),
-    password: z.string().min(1),
-  })
-  .strict();
 
 const sesionSchema = z.object({
   usuario: z.object({
@@ -36,13 +29,15 @@ const registroRoute = createRoute({
   method: "post",
   path: "/registro",
   tags: ["Autenticación"],
-  summary: "Registrar usuario UTN o externo",
+  summary: "Registrar nuevo usuario externo",
+  description:
+    "Permite el auto-registro exclusivo para usuarios externos al establecimiento.",
   request: {
     body: { content: { "application/json": { schema: registroSchema } } },
   },
   responses: {
     201: {
-      description: "Usuario registrado",
+      description: "Usuario externo registrado",
       content: { "application/json": { schema: sesionSchema } },
     },
     400: {
@@ -50,7 +45,7 @@ const registroRoute = createRoute({
       content: { "application/json": { schema: errorSchema } },
     },
     409: {
-      description: "Email, documento o legajo ya registrado",
+      description: "Email o documento ya registrado",
       content: { "application/json": { schema: errorSchema } },
     },
   },
@@ -60,7 +55,7 @@ const loginRoute = createRoute({
   method: "post",
   path: "/login",
   tags: ["Autenticación"],
-  summary: "Iniciar sesión con email y contraseña",
+  summary: "Iniciar sesión con email/legajo y contraseña",
   request: {
     body: { content: { "application/json": { schema: loginSchema } } },
   },
@@ -107,7 +102,7 @@ auth.openapi(registroRoute, async (c) => {
       error.code === "P2002"
     ) {
       return c.json(
-        { message: "Email, documento o legajo ya registrado" },
+        { message: "Email o documento ya registrado" },
         409,
       );
     }
@@ -116,10 +111,12 @@ auth.openapi(registroRoute, async (c) => {
 });
 
 auth.openapi(loginRoute, async (c) => {
-  const sesion = await iniciarSesion(
-    c.req.valid("json").username,
-    c.req.valid("json").password,
-  );
+  const body = c.req.valid("json");
+  const identificador = body.email || body.username;
+  if (!identificador) {
+    return c.json({ message: "Debe ingresar email o username" }, 400);
+  }
+  const sesion = await iniciarSesion(identificador, body.password);
   if (!sesion) return c.json({ message: "Credenciales inválidas" }, 401);
   return c.json(sesion, 200);
 });
