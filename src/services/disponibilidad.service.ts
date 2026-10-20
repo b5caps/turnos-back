@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { UsuarioNotFoundError } from "./reservas.service.js";
 
 const prisma = new PrismaClient();
 
@@ -226,6 +227,15 @@ async function consultarDisponibilidadPorTipo(
 }
 
 export async function crearReserva(input: CrearReservaInput) {
+  const usuarioExiste = await prisma.usuario.findUnique({
+    where: { id: input.usuarioId },
+    select: { id: true },
+  });
+
+  if (!usuarioExiste) {
+    throw new UsuarioNotFoundError("El usuario especificado no existe");
+  }
+
   const inicio = new Date(input.fechaHoraInicio);
   const fin = new Date(input.fechaHoraFin);
 
