@@ -1,6 +1,7 @@
 import { PrismaClient, type Prisma } from "@prisma/client";
 import type {
   CancelarReservaInput,
+  FinalizarReservaInput,
   ListarReservasQuery,
 } from "../schemas/reservas.schema.js";
 import type { TokenPayload } from "./auth.service.js";
@@ -143,6 +144,73 @@ export async function cancelarReserva(
       recursos: {
         include: {
           recurso: true,
+        },
+      },
+    },
+  });
+}
+
+export async function finalizarReserva(
+  id: number,
+  input: FinalizarReservaInput,
+  usuarioAuth: TokenPayload,
+) {
+  const reserva = await prisma.reserva.findUnique({
+    where: { id },
+  });
+
+  if (!reserva) {
+    throw new ReservaNotFoundError("Reserva no encontrada");
+  }
+
+  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+    throw new ReservaForbiddenError(
+      "No tienes permisos para finalizar esta reserva",
+    );
+  }
+
+  if (reserva.fechaHoraCancelacion !== null) {
+    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+  }
+
+  if (reserva.fechaHoraCheckOut !== null) {
+    throw new ReservaConflictError("La reserva ya se encuentra finalizada");
+  }
+
+  if (reserva.fechaHoraCheckIn === null) {
+    throw new ReservaBusinessError(
+      "No se puede finalizar una reserva que no ha realizado check-in",
+    );
+  }
+
+  const ahora = new Date();
+  if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
+    throw new ReservaBusinessError(
+      "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
+    );
+  }
+
+  return prisma.reserva.update({
+    where: { id },
+    data: {
+      fechaHoraCheckOut: ahora,
+      fechaHoraFin: ahora,
+      ...(input?.observacion?.trim()
+        ? { observacion: input.observacion.trim() }
+        : {}),
+    },
+    include: {
+      recursos: {
+        include: {
+          recurso: true,
+        },
+      },
+      usuario: {
+        select: {
+          id: true,
+          nombre: true,
+          apellido: true,
+          email: true,
         },
       },
     },
