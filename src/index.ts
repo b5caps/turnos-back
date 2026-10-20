@@ -7,6 +7,8 @@ import recursosRoutes from "./routes/recursos.routes.js";
 import reservasRoutes from "./routes/reservas.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import { limpiarHoldsExpirados } from "./services/limpieza.service.js";
+import espaciosRoutes from "./routes/espacios.routes.js";
+import configuracionRoutes from "./routes/configuracion.routes.js";
 
 const app = new OpenAPIHono();
 
@@ -18,6 +20,8 @@ app.get("/", (c) => {
 app.route("/api/recursos", recursosRoutes);
 app.route("/api/reservas", reservasRoutes);
 app.route("/api/auth", authRoutes);
+app.route("/api/espacios", espaciosRoutes);
+app.route("/api/configuracion", configuracionRoutes);
 
 app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
   type: "http",

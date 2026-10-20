@@ -1,0 +1,11 @@
+// prisma/schema/configuracion.prisma
+
+model Configuracion {
+  id                         Int      @id @default(1)
+  minutosApertura            Int      @default(480)  // 08:00
+  minutosCierre              Int      @default(1320) // 22:00
+  tiempoMaximoAntelacionDias Int      @default(30)
+  duracionMinimaMinutos      Int      @default(30)
+  duracionMaximaMinutos      Int      @default(240)
+  actualizadoEn              DateTime @updatedAt
+}
