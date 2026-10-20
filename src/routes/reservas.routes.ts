@@ -6,6 +6,7 @@ import {
 import {
   cancelarReserva,
   confirmarReserva,
+  finalizarReserva,
   listarReservas,
   resolverTitularReserva,
   ReservaBusinessError,
@@ -20,6 +21,10 @@ import {
   confirmarReservaParamsSchema,
   confirmarReservaResponseSchema,
   errorResponse,
+  errorSchema,
+  finalizarReservaBodySchema,
+  finalizarReservaParamsSchema,
+  finalizarReservaResponseSchema,
   listarReservasQuerySchema,
   listarReservasResponseSchema,
   unauthorizedResponse,
@@ -53,15 +58,10 @@ const listarReservasRoute = createRoute({
 });
 
 const reservaRequestSchema = z.object({
-  usuarioId: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .openapi({
-      description:
-        "ID del usuario (opcional; administradores pueden especificarlo para reservar en su nombre)",
-    }),
+  usuarioId: z.number().int().positive().optional().openapi({
+    description:
+      "ID del usuario (opcional; administradores pueden especificarlo para reservar en su nombre)",
+  }),
   recursoIds: z.array(z.number().int().positive()).min(1),
   fechaHoraInicio: z.string().datetime({ offset: true, local: true }),
   fechaHoraFin: z.string().datetime({ offset: true, local: true }),
@@ -338,6 +338,97 @@ reservas.openapi(cancelarReservaRoute, async (c) => {
           confirmada: reserva.fechaHoraConfirmacion !== null,
           fechaHoraCancelacion:
             reserva.fechaHoraCancelacion?.toISOString() ?? null,
+          recursos: reserva.recursos,
+        },
+      },
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
+    }
+    if (error instanceof ReservaConflictError) {
+      return c.json({ message: error.message }, 409);
+    }
+    if (error instanceof ReservaBusinessError) {
+      return c.json({ message: error.message }, 400);
+    }
+
+    throw error;
+  }
+});
+
+const finalizarReservaRoute = createRoute({
+  method: "patch",
+  path: "/{id}/finalizar",
+  tags: ["Reservas"],
+  summary: "Finalizar una reserva en curso",
+  description:
+    "Finaliza una reserva activa que se encuentre en curso y con check-in realizado. Puede ser ejecutado por el titular de la reserva o por un Administrador, liberando de inmediato el recurso.",
+  security: [{ Bearer: [] }],
+  request: {
+    params: finalizarReservaParamsSchema,
+    body: {
+      content: {
+        "application/json": { schema: finalizarReservaBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: finalizarReservaResponseSchema },
+      },
+      description: "Reserva finalizada exitosamente",
+    },
+    400: {
+      content: { "application/json": { schema: errorSchema } },
+      description:
+        "Regla de negocio no cumplida (ej. no está en curso o no tiene check-in)",
+    },
+    401: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autenticado o token no provisto/inválido",
+    },
+    403: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autorizado para finalizar esta reserva",
+    },
+    404: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Reserva no encontrada",
+    },
+    409: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "La reserva ya se encuentra cancelada o finalizada",
+    },
+  },
+});
+
+reservas.use("/:id/finalizar", requireAuth);
+
+reservas.openapi(finalizarReservaRoute, async (c) => {
+  try {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const usuarioAuth = c.get("usuario");
+
+    const reserva = await finalizarReserva(id, body, usuarioAuth);
+
+    return c.json(
+      {
+        data: {
+          ...reserva,
+          fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
+          fechaHoraFin: reserva.fechaHoraFin.toISOString(),
+          fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+          fechaHoraCancelacion:
+            reserva.fechaHoraCancelacion?.toISOString() ?? null,
+          fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
+          fechaHoraCheckOut: reserva.fechaHoraCheckOut?.toISOString() ?? null,
           recursos: reserva.recursos,
         },
       },
