@@ -11,6 +11,7 @@ export class ReservaNotFoundError extends Error {}
 export class ReservaConflictError extends Error {}
 export class ReservaForbiddenError extends Error {}
 export class ReservaBusinessError extends Error {}
+export class UsuarioNotFoundError extends Error {}
 
 export async function listarReservas(
   filtros: ListarReservasQuery,
@@ -108,6 +109,19 @@ export async function cancelarReserva(
 
   if (!reserva) {
     throw new ReservaNotFoundError("Reserva no encontrada");
+  }
+
+  if (input?.usuarioId) {
+    if (usuarioAuth.rol !== "ADMIN" && input.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para cancelar reservas de otro usuario",
+      );
+    }
+    if (reserva.usuarioId !== input.usuarioId) {
+      throw new ReservaNotFoundError(
+        "Reserva no encontrada para el usuario especificado",
+      );
+    }
   }
 
   if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {

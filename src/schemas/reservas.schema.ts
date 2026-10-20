@@ -16,10 +16,66 @@ export const cancelarReservaParamsSchema = z.object({
 });
 
 export const cancelarReservaBodySchema = z.object({
+  usuarioId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .openapi({
+      example: 2,
+      description:
+        "ID del usuario titular (opcional; si se envía, se valida que la reserva le pertenezca)",
+    }),
   motivoCancelacion: z.string().trim().min(1).max(255).optional().openapi({
     example: "Imprevisto laboral",
     description: "Motivo o justificación de la cancelación",
   }),
+});
+
+export const crearReservaBodySchema = z.object({
+  usuarioId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .openapi({
+      example: 2,
+      description:
+        "ID del usuario para quien se crea la reserva (opcional; solo administradores pueden especificar un usuario distinto)",
+    }),
+  recursoIds: z.array(z.number().int().positive()).min(1).openapi({
+    example: [1, 2],
+    description: "Lista de IDs de recursos a reservar",
+  }),
+  fechaHoraInicio: z
+    .string()
+    .datetime({ offset: true, local: true })
+    .openapi({
+      example: "2026-10-25T10:00:00.000Z",
+      description: "Fecha y hora de inicio de la reserva",
+    }),
+  fechaHoraFin: z
+    .string()
+    .datetime({ offset: true, local: true })
+    .openapi({
+      example: "2026-10-25T12:00:00.000Z",
+      description: "Fecha y hora de fin de la reserva",
+    }),
+  fechaLimiteCheckIn: z
+    .string()
+    .datetime({ offset: true, local: true })
+    .optional()
+    .openapi({
+      example: "2026-10-25T10:15:00.000Z",
+      description: "Fecha y hora límite para realizar check-in",
+    }),
+  observacion: z
+    .string()
+    .optional()
+    .openapi({
+      example: "Uso para reunión de cátedra",
+      description: "Observación opcional de la reserva",
+    }),
 });
 
 export const reservaDetalleSchema = z.object({
@@ -94,4 +150,5 @@ export const errorSchema = z.object({
 
 export type CancelarReservaInput = z.infer<typeof cancelarReservaBodySchema>;
 export type ListarReservasQuery = z.infer<typeof listarReservasQuerySchema>;
+export type CrearReservaBody = z.infer<typeof crearReservaBodySchema>;
 

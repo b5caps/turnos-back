@@ -11,11 +11,13 @@ import {
   ReservaConflictError,
   ReservaForbiddenError,
   ReservaNotFoundError,
+  UsuarioNotFoundError,
 } from "../services/reservas.service.js";
 import {
   cancelarReservaBodySchema,
   cancelarReservaParamsSchema,
   cancelarReservaResponseSchema,
+  crearReservaBodySchema,
   errorSchema,
   listarReservasQuerySchema,
   listarReservasResponseSchema,
@@ -51,18 +53,6 @@ const listarReservasRoute = createRoute({
   },
 });
 
-const reservaRequestSchema = z.object({
-  usuarioId: z.number().int().positive(),
-  recursoIds: z.array(z.number().int().positive()).min(1),
-  fechaHoraInicio: z.string().datetime({ offset: true, local: true }),
-  fechaHoraFin: z.string().datetime({ offset: true, local: true }),
-  fechaLimiteCheckIn: z
-    .string()
-    .datetime({ offset: true, local: true })
-    .optional(),
-  observacion: z.string().optional(),
-});
-
 const reservaResponseSchema = z.object({
   id: z.number(),
   usuarioId: z.number(),
@@ -86,10 +76,13 @@ const crearReservaRoute = createRoute({
   path: "/",
   tags: ["Reservas"],
   summary: "Reservar un espacio y sus recursos",
+  description:
+    "Crea una reserva para el usuario autenticado o, si es Administrador, en nombre del usuario especificado.",
+  security: [{ Bearer: [] }],
   request: {
     body: {
       content: {
-        "application/json": { schema: reservaRequestSchema },
+        "application/json": { schema: crearReservaBodySchema },
       },
     },
   },
@@ -100,9 +93,25 @@ const crearReservaRoute = createRoute({
           schema: z.object({ data: reservaResponseSchema }),
         },
       },
-      description: "Reserva creada",
+      description: "Reserva creada exitosamente",
     },
-    400: { description: "Solicitud inválida o recursos no disponibles" },
+    400: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Solicitud inválida o recursos no disponibles",
+    },
+    401: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "No autenticado o token no provisto/inválido",
+    },
+    403: {
+      content: { "application/json": { schema: errorSchema } },
+      description:
+        "No autorizado para crear reservas en nombre de otro usuario",
+    },
+    404: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "El usuario objetivo especificado no existe",
+    },
   },
 });
 
@@ -134,7 +143,37 @@ reservas.openapi(listarReservasRoute, async (c) => {
 
 reservas.openapi(crearReservaRoute, async (c) => {
   try {
-    const reserva = await crearReserva(c.req.valid("json"));
+    const usuarioAuth = c.get("usuario");
+    const body = c.req.valid("json");
+
+    if (body.usuarioId !== undefined && body.usuarioId !== usuarioAuth.id) {
+      if (usuarioAuth.rol !== "ADMIN") {
+        return c.json(
+          {
+            message:
+              "No tienes permisos para crear reservas en nombre de otro usuario",
+          },
+          403,
+        );
+      }
+    }
+
+    const targetUsuarioId =
+      usuarioAuth.rol === "ADMIN" && body.usuarioId
+        ? body.usuarioId
+        : usuarioAuth.id;
+
+    let observacion = body.observacion;
+    if (usuarioAuth.rol === "ADMIN" && targetUsuarioId !== usuarioAuth.id) {
+      const prefijo = "[Gestionado por Administrador]";
+      observacion = observacion ? `${prefijo} ${observacion}` : prefijo;
+    }
+
+    const reserva = await crearReserva({
+      ...body,
+      usuarioId: targetUsuarioId,
+      observacion,
+    });
 
     return c.json(
       {
@@ -149,6 +188,9 @@ reservas.openapi(crearReservaRoute, async (c) => {
       201,
     );
   } catch (error) {
+    if (error instanceof UsuarioNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
     if (error instanceof DisponibilidadError) {
       return c.json({ message: error.message }, 400);
     }
