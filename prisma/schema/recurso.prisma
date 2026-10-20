@@ -5,13 +5,13 @@ model Recurso {
   nombre             String
   capacidad          Int
   descripcion        String
+  activo             Boolean                   @default(true)
   disponibilidades   Disponibilidad[]
   bloqueos           Bloqueo[]
   reservas           ReservaRecurso[]
   reservasPendientes ReservaPendienteRecurso[]
-  sala     Sala?
-  notebook Notebook?
-
+  sala               Sala?
+  notebook           Notebook?
 }
 
 model Sala {
