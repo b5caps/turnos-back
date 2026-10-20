@@ -30,11 +30,17 @@ export async function listarReservas(
 
   if (filtros.estado === "activas") {
     where.fechaHoraCancelacion = null;
+    where.fechaHoraConfirmacion = { not: null };
     where.fechaHoraFin = { gt: ahora };
+  } else if (filtros.estado === "pendientes") {
+    where.fechaHoraCancelacion = null;
+    where.fechaHoraConfirmacion = null;
+    where.fechaExpiracionHold = { gt: ahora };
   } else if (filtros.estado === "canceladas") {
     where.fechaHoraCancelacion = { not: null };
   } else if (filtros.estado === "finalizadas") {
     where.fechaHoraCancelacion = null;
+    where.fechaHoraConfirmacion = { not: null };
     where.fechaHoraFin = { lte: ahora };
   }
 
@@ -146,5 +152,62 @@ export async function cancelarReserva(
         },
       },
     },
+  });
+}
+
+export async function confirmarReserva(
+  id: number,
+  usuarioAuth: TokenPayload,
+) {
+  return prisma.$transaction(async (tx) => {
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+      include: {
+        recursos: {
+          include: {
+            recurso: true,
+          },
+        },
+      },
+    });
+
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
+
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para confirmar esta reserva",
+      );
+    }
+
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva se encuentra cancelada");
+    }
+
+    if (reserva.fechaHoraConfirmacion !== null) {
+      throw new ReservaConflictError("La reserva ya ha sido confirmada previamente");
+    }
+
+    const ahora = new Date();
+    if (reserva.fechaExpiracionHold && reserva.fechaExpiracionHold < ahora) {
+      throw new ReservaConflictError(
+        "El tiempo para confirmar la reserva ha expirado. El cupo ha sido liberado.",
+      );
+    }
+
+    return tx.reserva.update({
+      where: { id },
+      data: {
+        fechaHoraConfirmacion: ahora,
+      },
+      include: {
+        recursos: {
+          include: {
+            recurso: true,
+          },
+        },
+      },
+    });
   });
 }

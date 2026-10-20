@@ -1,6 +1,9 @@
 import { PrismaClient } from "@prisma/client";
+import { ReservaConflictError } from "./reservas.service.js";
 
 const prisma = new PrismaClient();
+
+export const DURACION_HOLD_MINUTOS = 10;
 
 type TipoRecurso = "SALA" | "NOTEBOOK";
 
@@ -16,6 +19,7 @@ export type CrearReservaInput = {
   fechaHoraFin: string;
   fechaLimiteCheckIn?: string;
   observacion?: string;
+  confirmarInmediato?: boolean;
 };
 
 export class DisponibilidadError extends Error {}
@@ -104,6 +108,10 @@ async function consultarDisponibilidadPorTipo(
             fechaHoraCancelacion: null,
             fechaHoraInicio: { lt: finDia },
             fechaHoraFin: { gt: inicioDia },
+            OR: [
+              { fechaHoraConfirmacion: { not: null } },
+              { fechaExpiracionHold: { gt: new Date() } },
+            ],
           },
         },
         include: {
@@ -134,11 +142,17 @@ async function consultarDisponibilidadPorTipo(
   }
 
   const recursosMapeados = recursos.map((recurso) => {
-    // Reservas activas dentro del horario del día consultado
+    // Reservas activas dentro del horario del día consultado (confirmadas o holds vigentes)
+    const ahora = new Date();
     const reservasSolapadas = recurso.reservas
       .map((rr) => rr.reserva)
       .filter((reserva) => {
         if (reserva.fechaHoraCancelacion) return false;
+        const activa =
+          reserva.fechaHoraConfirmacion !== null ||
+          (reserva.fechaExpiracionHold !== null &&
+            reserva.fechaExpiracionHold > ahora);
+        if (!activa) return false;
         return (
           reserva.fechaHoraInicio < finDia && reserva.fechaHoraFin > inicioDia
         );
@@ -237,35 +251,9 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError("El rango horario no es válido");
   }
 
-  const recursoIds = [...new Set(input.recursoIds)];
+  const recursoIds = [...new Set(input.recursoIds)].sort((a, b) => a - b);
   if (recursoIds.length === 0) {
     throw new DisponibilidadError("Debe seleccionar al menos un recurso");
-  }
-
-  const diaStr = input.fechaHoraInicio.split("T")[0];
-  const { recursos: disponibilidad } = await consultarDisponibilidad({
-    fecha: diaStr,
-  });
-  const seleccionados = disponibilidad.filter((recurso) =>
-    recursoIds.includes(recurso.id),
-  );
-
-  if (seleccionados.length !== recursoIds.length) {
-    throw new DisponibilidadError("Uno o más recursos no existen");
-  }
-
-  const noDisponibles = seleccionados.filter((recurso) => {
-    const bloquesRango = recurso.bloques.filter((b) => {
-      return b.horaInicio < fin && b.horaFin > inicio;
-    });
-
-    return bloquesRango.length === 0 || bloquesRango.some((b) => !b.disponible);
-  });
-
-  if (noDisponibles.length > 0) {
-    throw new DisponibilidadError(
-      `Los recursos no están disponibles: ${noDisponibles.map((recurso) => recurso.nombre).join(", ")}`,
-    );
   }
 
   const fechaLimiteCheckIn = input.fechaLimiteCheckIn
@@ -279,13 +267,111 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError("La fecha límite de check-in no es válida");
   }
 
+  const ahora = new Date();
+
   return prisma.$transaction(async (tx) => {
+    // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
+    await tx.$queryRaw`
+      SELECT id FROM "Recurso"
+      WHERE id = ANY(${recursoIds})
+      FOR UPDATE
+    `;
+
+    // 2. Obtener recursos con sus bloqueos y reservas activas solapadas
+    const diaSemana = inicio.getDay();
+    const recursos = await tx.recurso.findMany({
+      where: {
+        id: { in: recursoIds },
+      },
+      include: {
+        disponibilidades: {
+          where: { diaSemana },
+        },
+        bloqueos: {
+          where: {
+            OR: [
+              {
+                fechaHoraInicio: { lt: fin },
+                fechaHoraFin: { gt: inicio },
+              },
+              {
+                fechaHoraInicio: { lt: fin },
+                fechaHoraFin: null,
+              },
+            ],
+          },
+        },
+        reservas: {
+          where: {
+            reserva: {
+              fechaHoraCancelacion: null,
+              fechaHoraInicio: { lt: fin },
+              fechaHoraFin: { gt: inicio },
+              OR: [
+                { fechaHoraConfirmacion: { not: null } },
+                { fechaExpiracionHold: { gt: ahora } },
+              ],
+            },
+          },
+          include: {
+            reserva: true,
+          },
+        },
+      },
+    });
+
+    if (recursos.length !== recursoIds.length) {
+      throw new DisponibilidadError("Uno o más recursos no existen");
+    }
+
+    const minutosInicioReq = inicio.getHours() * 60 + inicio.getMinutes();
+    const minutosFinReq = fin.getHours() * 60 + fin.getMinutes();
+
+    for (const recurso of recursos) {
+      // Validar horario del recurso para ese día
+      const dentroDeHorario = recurso.disponibilidades.some(
+        (disp) =>
+          minutosInicioReq >= disp.minutosInicio &&
+          minutosFinReq <= disp.minutosFin,
+      );
+
+      if (recurso.disponibilidades.length > 0 && !dentroDeHorario) {
+        throw new DisponibilidadError(
+          `El recurso ${recurso.nombre} no está disponible fuera de su horario establecido`,
+        );
+      }
+
+      // Validar si tiene bloqueos administrativos
+      if (recurso.bloqueos.length > 0) {
+        throw new ReservaConflictError(
+          `El recurso ${recurso.nombre} se encuentra bloqueado por administración en el horario solicitado`,
+        );
+      }
+
+      // Validar capacidad disponible
+      const ocupacion = recurso.reservas.length;
+      if (ocupacion >= recurso.capacidad) {
+        throw new ReservaConflictError(
+          `El recurso ${recurso.nombre} se encuentra temporalmente apartado o reservado por otro usuario en ese horario`,
+        );
+      }
+    }
+
+    // 3. Determinar confirmación inmediata o Hold de 10 minutos
+    const esConfirmacionInmediata = Boolean(input.confirmarInmediato);
+    const fechaHoraConfirmacion = esConfirmacionInmediata ? ahora : null;
+    const fechaExpiracionHold = esConfirmacionInmediata
+      ? null
+      : new Date(ahora.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000);
+
     return tx.reserva.create({
       data: {
         usuarioId: input.usuarioId,
         fechaHoraInicio: inicio,
         fechaHoraFin: fin,
         fechaLimiteCheckIn,
+        fechaHoraConfirmacion,
+        fechaExpiracionHold,
         observacion: input.observacion,
         recursos: {
           create: recursoIds.map((recursoId) => ({ recursoId })),
