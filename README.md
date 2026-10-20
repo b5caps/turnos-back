@@ -44,25 +44,35 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
 - `GET /api/reservas`: Listar reservas para el usuario autenticado.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Query params opcionales**:
-    - `estado`: `activas`, `canceladas`, `finalizadas` o `todas`.
+    - `estado`: `activas`, `pendientes`, `canceladas`, `finalizadas` o `todas`.
     - `usuarioId`: ID del usuario a consultar (solo permitido para usuarios con rol `ADMIN`).
   - **Reglas de negocio**:
     - Usuarios comunes (`UTN` / `EXTERNO`): Reciben únicamente sus propias reservas.
     - Administradores (`ADMIN`): Reciben todas las reservas o las del `usuarioId` indicado.
-  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`.
+  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`. Cada reserva expone `fechaExpiracionHold`, `fechaHoraConfirmacion` y `confirmada`.
 
-- `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11).
+- `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11) con Hold temporal de 10 minutos.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Titular de la reserva**:
-    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`.
-    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre (ej. reserva institucional / bloqueo de periodo determinado) o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
-  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "..." }` (`usuarioId` es opcional).
+    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre. Inician en estado de reserva temporal ("Hold" de 10 minutos) que debe confirmarse posteriormente.
+    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o de terceros, y opcionalmente puede enviar `"confirmarInmediato": true` para omitir el hold y confirmarla directamente.
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "...", "confirmarInmediato": false }`.
   - **Reglas de negocio**:
-    - Retorna `201` con los datos de la reserva creada.
-    - Retorna `400` si el rango horario es inválido o los recursos no están disponibles.
+    - Retorna `201` con la reserva en estado Hold (o confirmada).
+    - Retorna `409` si el recurso ya fue apartado o reservado por otro usuario concurrente (protegido por `SELECT ... FOR UPDATE`).
+    - Retorna `400` si el rango horario es inválido.
     - Retorna `401` si no está autenticado o el token es inválido.
-    - Retorna `403` si un usuario no administrador intenta reservar a nombre de otro.
+    - Retorna `403` si un usuario no administrador intenta reservar a nombre de otro o usar `confirmarInmediato`.
     - Retorna `404` si el `usuarioId` destino indicado por un administrador no existe.
+
+- `POST /api/reservas/:id/confirmar`: Confirmar una reserva en estado Hold.
+  - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Autorización**: El usuario autenticado debe ser el titular de la reserva o Administrador.
+  - **Reglas de negocio**:
+    - Retorna `200` con la reserva confirmada y consolida el turno definitivamente.
+    - Retorna `404` si la reserva no existe.
+    - Retorna `403` si el usuario no es el titular ni administrador.
+    - Retorna `409` si la reserva ya está confirmada, ya fue cancelada, o su tiempo de Hold (10 min) expiró.
 
 ## Cancelación de Reservas
 

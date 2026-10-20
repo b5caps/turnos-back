@@ -5,6 +5,7 @@ import {
 } from "../services/disponibilidad.service.js";
 import {
   cancelarReserva,
+  confirmarReserva,
   listarReservas,
   resolverTitularReserva,
   ReservaBusinessError,
@@ -16,9 +17,12 @@ import {
   cancelarReservaBodySchema,
   cancelarReservaParamsSchema,
   cancelarReservaResponseSchema,
-  errorSchema,
+  confirmarReservaParamsSchema,
+  confirmarReservaResponseSchema,
+  errorResponse,
   listarReservasQuerySchema,
   listarReservasResponseSchema,
+  unauthorizedResponse,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
@@ -44,15 +48,20 @@ const listarReservasRoute = createRoute({
       },
       description: "Lista de reservas obtenida exitosamente",
     },
-    401: {
-      content: { "application/json": { schema: errorSchema } },
-      description: "No autenticado o token no provisto/inválido",
-    },
+    401: unauthorizedResponse,
   },
 });
 
 const reservaRequestSchema = z.object({
-  usuarioId: z.number().int().positive(),
+  usuarioId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .openapi({
+      description:
+        "ID del usuario (opcional; administradores pueden especificarlo para reservar en su nombre)",
+    }),
   recursoIds: z.array(z.number().int().positive()).min(1),
   fechaHoraInicio: z.string().datetime({ offset: true, local: true }),
   fechaHoraFin: z.string().datetime({ offset: true, local: true }),
@@ -61,6 +70,13 @@ const reservaRequestSchema = z.object({
     .datetime({ offset: true, local: true })
     .optional(),
   observacion: z.string().optional(),
+  confirmarInmediato: z
+    .boolean()
+    .optional()
+    .openapi({
+      description:
+        "Confirmar inmediatamente la reserva sin hold temporal (solo administradores)",
+    }),
 });
 
 const reservaResponseSchema = z.object({
@@ -69,6 +85,9 @@ const reservaResponseSchema = z.object({
   fechaHoraInicio: z.string(),
   fechaHoraFin: z.string(),
   fechaLimiteCheckIn: z.string(),
+  fechaHoraConfirmacion: z.string().nullable().optional(),
+  fechaExpiracionHold: z.string().nullable().optional(),
+  confirmada: z.boolean().optional(),
   observacion: z.string().nullable(),
   recursos: z.array(
     z.object({
@@ -86,6 +105,9 @@ const crearReservaRoute = createRoute({
   path: "/",
   tags: ["Reservas"],
   summary: "Reservar un espacio y sus recursos",
+  description:
+    "Crea una reserva de recursos. Para usuarios comunes inicia en estado de reserva temporal (Hold de 10 min) y requiere confirmación posterior. Los administradores pueden confirmar de forma inmediata.",
+  security: [{ Bearer: [] }],
   request: {
     body: {
       content: {
@@ -100,9 +122,13 @@ const crearReservaRoute = createRoute({
           schema: z.object({ data: reservaResponseSchema }),
         },
       },
-      description: "Reserva creada",
+      description: "Reserva iniciada exitosamente (en hold o confirmada)",
     },
-    400: { description: "Solicitud inválida o recursos no disponibles" },
+    400: errorResponse("Solicitud inválida o rango horario no disponible"),
+    401: unauthorizedResponse,
+    403: errorResponse("No autorizado para reservar en nombre de otro usuario o confirmar de inmediato"),
+    404: errorResponse("El usuario especificado no existe"),
+    409: errorResponse("Uno o más recursos ya se encuentran reservados o bloqueados en ese horario"),
   },
 });
 
@@ -121,6 +147,11 @@ reservas.openapi(listarReservasRoute, async (c) => {
         fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
         fechaHoraFin: reserva.fechaHoraFin.toISOString(),
         fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+        fechaHoraConfirmacion:
+          reserva.fechaHoraConfirmacion?.toISOString() ?? null,
+        fechaExpiracionHold:
+          reserva.fechaExpiracionHold?.toISOString() ?? null,
+        confirmada: reserva.fechaHoraConfirmacion !== null,
         fechaHoraCancelacion:
           reserva.fechaHoraCancelacion?.toISOString() ?? null,
         fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
@@ -134,7 +165,22 @@ reservas.openapi(listarReservasRoute, async (c) => {
 
 reservas.openapi(crearReservaRoute, async (c) => {
   try {
-    const reserva = await crearReserva(c.req.valid("json"));
+    const usuarioAuth = c.get("usuario");
+    const body = c.req.valid("json");
+
+    if (body.confirmarInmediato && usuarioAuth.rol !== "ADMIN") {
+      return c.json(
+        { message: "Solo los administradores pueden confirmar inmediatamente una reserva al crearla" },
+        403,
+      );
+    }
+
+    const titularId = await resolverTitularReserva(body.usuarioId, usuarioAuth);
+
+    const reserva = await crearReserva({
+      ...body,
+      usuarioId: titularId,
+    });
 
     return c.json(
       {
@@ -143,14 +189,94 @@ reservas.openapi(crearReservaRoute, async (c) => {
           fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
           fechaHoraFin: reserva.fechaHoraFin.toISOString(),
           fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+          fechaHoraConfirmacion:
+            reserva.fechaHoraConfirmacion?.toISOString() ?? null,
+          fechaExpiracionHold:
+            reserva.fechaExpiracionHold?.toISOString() ?? null,
+          confirmada: reserva.fechaHoraConfirmacion !== null,
           recursos: reserva.recursos,
         },
       },
       201,
     );
   } catch (error) {
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
+    }
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof ReservaConflictError) {
+      return c.json({ message: error.message }, 409);
+    }
     if (error instanceof DisponibilidadError) {
       return c.json({ message: error.message }, 400);
+    }
+
+    throw error;
+  }
+});
+
+const confirmarReservaRoute = createRoute({
+  method: "post",
+  path: "/{id}/confirmar",
+  tags: ["Reservas"],
+  summary: "Confirmar una reserva temporal en hold",
+  description:
+    "Confirma una reserva temporalmente apartada (hold de 10 min) antes de que expire su tiempo límite.",
+  security: [{ Bearer: [] }],
+  request: {
+    params: confirmarReservaParamsSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: confirmarReservaResponseSchema },
+      },
+      description: "Reserva confirmada exitosamente",
+    },
+    401: unauthorizedResponse,
+    403: errorResponse("No tienes permisos para confirmar esta reserva"),
+    404: errorResponse("Reserva no encontrada"),
+    409: errorResponse("La reserva ya fue confirmada, está cancelada o su tiempo de hold expiró"),
+  },
+});
+
+reservas.openapi(confirmarReservaRoute, async (c) => {
+  try {
+    const { id } = c.req.valid("param");
+    const usuarioAuth = c.get("usuario");
+
+    const reserva = await confirmarReserva(id, usuarioAuth);
+
+    return c.json(
+      {
+        data: {
+          ...reserva,
+          fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
+          fechaHoraFin: reserva.fechaHoraFin.toISOString(),
+          fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+          fechaHoraConfirmacion:
+            reserva.fechaHoraConfirmacion?.toISOString() ?? null,
+          fechaExpiracionHold:
+            reserva.fechaExpiracionHold?.toISOString() ?? null,
+          confirmada: true,
+          fechaHoraCancelacion:
+            reserva.fechaHoraCancelacion?.toISOString() ?? null,
+          recursos: reserva.recursos,
+        },
+      },
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
+    }
+    if (error instanceof ReservaConflictError) {
+      return c.json({ message: error.message }, 409);
     }
 
     throw error;
@@ -180,31 +306,15 @@ const cancelarReservaRoute = createRoute({
       },
       description: "Reserva cancelada exitosamente",
     },
-    400: {
-      content: { "application/json": { schema: errorSchema } },
-      description:
-        "Regla de negocio no cumplida (ej. ya finalizó o ya realizó check-in)",
-    },
-    401: {
-      content: { "application/json": { schema: errorSchema } },
-      description: "No autenticado o token no provisto/inválido",
-    },
-    403: {
-      content: { "application/json": { schema: errorSchema } },
-      description: "No autorizado para cancelar esta reserva",
-    },
-    404: {
-      content: { "application/json": { schema: errorSchema } },
-      description: "Reserva no encontrada",
-    },
-    409: {
-      content: { "application/json": { schema: errorSchema } },
-      description: "La reserva ya se encuentra cancelada",
-    },
+    400: errorResponse(
+      "Regla de negocio no cumplida (ej. ya finalizó o ya realizó check-in)",
+    ),
+    401: unauthorizedResponse,
+    403: errorResponse("No autorizado para cancelar esta reserva"),
+    404: errorResponse("Reserva no encontrada"),
+    409: errorResponse("La reserva ya se encuentra cancelada"),
   },
 });
-
-reservas.use("/:id/cancelar", requireAuth);
 
 reservas.openapi(cancelarReservaRoute, async (c) => {
   try {
@@ -221,6 +331,11 @@ reservas.openapi(cancelarReservaRoute, async (c) => {
           fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
           fechaHoraFin: reserva.fechaHoraFin.toISOString(),
           fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
+          fechaHoraConfirmacion:
+            reserva.fechaHoraConfirmacion?.toISOString() ?? null,
+          fechaExpiracionHold:
+            reserva.fechaExpiracionHold?.toISOString() ?? null,
+          confirmada: reserva.fechaHoraConfirmacion !== null,
           fechaHoraCancelacion:
             reserva.fechaHoraCancelacion?.toISOString() ?? null,
           recursos: reserva.recursos,
@@ -247,3 +362,4 @@ reservas.openapi(cancelarReservaRoute, async (c) => {
 });
 
 export default reservas;
+
