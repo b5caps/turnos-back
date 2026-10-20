@@ -92,6 +92,38 @@ export const errorSchema = z.object({
   message: z.string(),
 });
 
+export const finalizarReservaParamsSchema = z.object({
+  id: z.coerce
+    .number()
+    .int()
+    .positive()
+    .openapi({
+      param: {
+        name: "id",
+        in: "path",
+      },
+      example: 1,
+      description: "ID de la reserva a finalizar",
+    }),
+});
+
+export const finalizarReservaBodySchema = z.object({
+  observacion: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .openapi({
+      example: "Recurso devuelto en perfectas condiciones",
+      description: "Observación o comentario opcional al momento de la finalización",
+    }),
+});
+
+export const finalizarReservaResponseSchema = z.object({
+  data: reservaDetalleSchema,
+});
+
 export type CancelarReservaInput = z.infer<typeof cancelarReservaBodySchema>;
 export type ListarReservasQuery = z.infer<typeof listarReservasQuerySchema>;
+export type FinalizarReservaInput = z.infer<typeof finalizarReservaBodySchema>;
 
