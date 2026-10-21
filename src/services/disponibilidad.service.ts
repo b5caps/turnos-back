@@ -9,9 +9,17 @@ type ConsultaDisponibilidadInput = {
   tipo?: TipoRecurso;
 };
 
+export type ConsultaDisponibilidadNotebooksInput = {
+  fecha: string;
+  desde?: string;
+  hasta?: string;
+};
+
 export type CrearReservaInput = {
   usuarioId: number;
-  recursoIds: number[];
+  espacioId?: number;
+  notebookId?: number | null;
+  recursoIds?: number[];
   fechaHoraInicio: string;
   fechaHoraFin: string;
   fechaLimiteCheckIn?: string;
@@ -33,9 +41,55 @@ export async function consultarDisponibilidadSalas(
 }
 
 export async function consultarDisponibilidadNotebooks(
-  input: Omit<ConsultaDisponibilidadInput, "tipo">,
+  input: ConsultaDisponibilidadNotebooksInput,
 ) {
-  return consultarDisponibilidadPorTipo({ ...input, tipo: "NOTEBOOK" });
+  const resultado = await consultarDisponibilidadPorTipo({
+    fecha: input.fecha,
+    tipo: "NOTEBOOK",
+  });
+
+  if (!input.desde || !input.hasta) {
+    return resultado;
+  }
+
+  // Parsear desde y hasta (pueden ser formato HH:mm o ISO)
+  const [año, mes, dia] = input.fecha.split("-").map(Number);
+
+  let horaInicio: Date;
+  let horaFin: Date;
+
+  if (input.desde.includes("T")) {
+    horaInicio = new Date(input.desde);
+  } else {
+    const [h, m] = input.desde.split(":").map(Number);
+    horaInicio = new Date(año, mes - 1, dia, h, m, 0);
+  }
+
+  if (input.hasta.includes("T")) {
+    horaFin = new Date(input.hasta);
+  } else {
+    const [h, m] = input.hasta.split(":").map(Number);
+    horaFin = new Date(año, mes - 1, dia, h, m, 0);
+  }
+
+  const recursosConTurno = resultado.recursos.map((notebook) => {
+    const bloquesTurno = notebook.bloques.filter(
+      (b) => b.horaInicio < horaFin && b.horaFin > horaInicio,
+    );
+
+    const disponibleEnTurno =
+      bloquesTurno.length > 0 && bloquesTurno.every((b) => b.disponible);
+
+    return {
+      ...notebook,
+      disponibleEnTurno,
+    };
+  });
+
+  return {
+    ...resultado,
+    recursos: recursosConTurno,
+  };
 }
 
 const DURACION_BLOQUE_MIN = 15; // 15 minutos
@@ -148,50 +202,61 @@ async function consultarDisponibilidadPorTipo(
     const bloques = intervalosBloques.map(
       ({ inicioMin, finMin, inicio: bInicio, fin: bFin }) => {
         // Valida si el bloque cae dentro de la disponibilidad del recurso para ese día
-        const dentroDeHorario = recurso.disponibilidades.some(
-          (disp) =>
-            inicioMin >= disp.minutosInicio && finMin <= disp.minutosFin,
-        );
-
-        // Verifica bloqueo superpuesto con este bloque
-        const hayBloqueo = recurso.bloqueos.some((bloqueo) => {
-          const bloqueoInicio = new Date(bloqueo.fechaHoraInicio);
-          const bloqueoFin = bloqueo.fechaHoraFin
-            ? new Date(bloqueo.fechaHoraFin)
-            : null;
-          return (
-            bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
+        const dentroDeDisponibilidad =
+          recurso.disponibilidades.length === 0 ||
+          recurso.disponibilidades.some(
+            (d) => inicioMin >= d.minutosInicio && finMin <= d.minutosFin,
           );
-        });
 
-        // Reservas activas que solapan este bloque de 15 minutos
-        const reservasBloque = reservasSolapadas.filter((reserva) => {
-          return (
-            reserva.fechaHoraInicio < bFin && reserva.fechaHoraFin > bInicio
-          );
-        });
-
-        const ocupacion = reservasBloque.length;
-        const cuposLibres = Math.max(0, recurso.capacidad - ocupacion);
-
-        let motivoNoDisponible:
-          "fuera_de_horario" | "bloqueado" | "sin_cupos" | null = null;
-        if (!dentroDeHorario) {
-          motivoNoDisponible = "fuera_de_horario";
-        } else if (hayBloqueo) {
-          motivoNoDisponible = "bloqueado";
-        } else if (cuposLibres <= 0) {
-          motivoNoDisponible = "sin_cupos";
+        if (!dentroDeDisponibilidad) {
+          return {
+            horaInicio: bInicio,
+            horaFin: bFin,
+            ocupacion: 0,
+            disponible: false,
+            motivoNoDisponible: "fuera_de_horario" as const,
+          };
         }
 
-        const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0;
+        // Valida si existe algún bloqueo sobre el recurso en este bloque
+        const bloqueado = recurso.bloqueos.some((bloqueo) => {
+          if (!bloqueo.fechaHoraFin) {
+            return bloqueo.fechaHoraInicio <= bInicio;
+          }
+          return bloqueo.fechaHoraInicio < bFin && bloqueo.fechaHoraFin > bInicio;
+        });
+
+        if (bloqueado) {
+          return {
+            horaInicio: bInicio,
+            horaFin: bFin,
+            ocupacion: 0,
+            disponible: false,
+            motivoNoDisponible: "bloqueado" as const,
+          };
+        }
+
+        // Valida si el recurso está reservado en este bloque
+        const reservasEnBloque = reservasSolapadas.filter(
+          (r) => r.fechaHoraInicio < bFin && r.fechaHoraFin > bInicio,
+        );
+
+        if (reservasEnBloque.length > 0) {
+          return {
+            horaInicio: bInicio,
+            horaFin: bFin,
+            ocupacion: recurso.capacidad,
+            disponible: false,
+            motivoNoDisponible: "sin_cupos" as const,
+          };
+        }
 
         return {
           horaInicio: bInicio,
           horaFin: bFin,
-          ocupacion,
-          disponible,
-          motivoNoDisponible,
+          ocupacion: 0,
+          disponible: true,
+          motivoNoDisponible: null,
         };
       },
     );
@@ -210,6 +275,7 @@ async function consultarDisponibilidadPorTipo(
       id: recurso.id,
       nombre: recurso.nombre,
       capacidad: recurso.capacidad,
+      activo: (recurso as unknown as { activo?: boolean }).activo ?? true,
       ...datosEspecificos,
       horariosReservados: reservasSolapadas.map((reserva) => ({
         horaInicio: reserva.fechaHoraInicio,
@@ -237,9 +303,58 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError("El rango horario no es válido");
   }
 
-  const recursoIds = [...new Set(input.recursoIds)];
+  // Normalizar los IDs de recursos a partir de espacioId + notebookId o recursoIds
+  const ids: number[] = [];
+  if (input.espacioId !== undefined) {
+    ids.push(input.espacioId);
+    if (input.notebookId) {
+      ids.push(input.notebookId);
+    }
+  } else if (input.recursoIds && input.recursoIds.length > 0) {
+    ids.push(...input.recursoIds);
+  }
+
+  const recursoIds = [...new Set(ids)];
   if (recursoIds.length === 0) {
-    throw new DisponibilidadError("Debe seleccionar al menos un recurso");
+    throw new DisponibilidadError(
+      "Debe seleccionar al menos un espacio físico para la reserva",
+    );
+  }
+
+  // Validar existencia, tipo y estado de los recursos seleccionados
+  const recursosDb = await prisma.recurso.findMany({
+    where: { id: { in: recursoIds } },
+    include: {
+      sala: true,
+      notebook: true,
+    },
+  });
+
+  if (recursosDb.length !== recursoIds.length) {
+    throw new DisponibilidadError("Uno o más recursos no existen");
+  }
+
+  for (const r of recursosDb) {
+    if ((r as unknown as { activo?: boolean }).activo === false) {
+      throw new DisponibilidadError(
+        `El recurso '${r.nombre}' se encuentra inactivo y no puede ser reservado`,
+      );
+    }
+  }
+
+  const salas = recursosDb.filter((r) => r.sala !== null);
+  const notebooks = recursosDb.filter((r) => r.notebook !== null);
+
+  if (salas.length === 0) {
+    throw new DisponibilidadError(
+      "La reserva debe incluir obligatoriamente al menos un espacio físico (sala)",
+    );
+  }
+
+  if (notebooks.length > 1) {
+    throw new DisponibilidadError(
+      "Solo se permite vincular como máximo 1 notebook institucional por reserva",
+    );
   }
 
   const diaStr = input.fechaHoraInicio.split("T")[0];
@@ -251,7 +366,7 @@ export async function crearReserva(input: CrearReservaInput) {
   );
 
   if (seleccionados.length !== recursoIds.length) {
-    throw new DisponibilidadError("Uno o más recursos no existen");
+    throw new DisponibilidadError("Uno o más recursos no existen en la fecha seleccionada");
   }
 
   const noDisponibles = seleccionados.filter((recurso) => {
@@ -264,7 +379,7 @@ export async function crearReserva(input: CrearReservaInput) {
 
   if (noDisponibles.length > 0) {
     throw new DisponibilidadError(
-      `Los recursos no están disponibles: ${noDisponibles.map((recurso) => recurso.nombre).join(", ")}`,
+      `Los siguientes recursos no están disponibles en el rango horario solicitado: ${noDisponibles.map((recurso) => recurso.nombre).join(", ")}`,
     );
   }
 
@@ -293,7 +408,14 @@ export async function crearReserva(input: CrearReservaInput) {
       },
       include: {
         recursos: {
-          include: { recurso: true },
+          include: {
+            recurso: {
+              include: {
+                sala: true,
+                notebook: true,
+              },
+            },
+          },
         },
       },
     });
