@@ -33,7 +33,7 @@ app.doc("/doc", {
 
 app.get("/docs", swaggerUI({ url: "/doc" }));
 
-// Intervalo de limpieza cada 60 segundos
+// Intervalo de limpieza de reservas pendientes vencidas cada 60 segundos
 const INTERVALO_LIMPIEZA_MS = 60 * 1000;
 setInterval(() => {
   limpiarHoldsExpirados().catch((err) => {

@@ -1,10 +1,14 @@
-import { PrismaClient, type Prisma } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import type {
   CancelarReservaInput,
   FinalizarReservaInput,
   ListarReservasQuery,
 } from "../schemas/reservas.schema.js";
 import type { TokenPayload } from "./auth.service.js";
+import {
+  calcularFechaLimiteCheckIn,
+  DURACION_HOLD_MINUTOS,
+} from "./disponibilidad.service.js";
 
 const prisma = new PrismaClient();
 
@@ -29,23 +33,77 @@ export async function listarReservas(
 
   const ahora = new Date();
 
+  if (filtros.estado === "pendientes") {
+    const limiteExpiracion = new Date(
+      ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+    );
+    const wherePendiente: Prisma.ReservaPendienteWhereInput = {
+      fechaHoraSolicitud: { gt: limiteExpiracion },
+    };
+
+    if (usuarioAuth.rol === "ADMIN") {
+      if (filtros.usuarioId) {
+        wherePendiente.usuarioId = filtros.usuarioId;
+      }
+    } else {
+      wherePendiente.usuarioId = usuarioAuth.id;
+    }
+
+    const pendientes = await prisma.reservaPendiente.findMany({
+      where: wherePendiente,
+      orderBy: {
+        fechaHoraSolicitud: "desc",
+      },
+      include: {
+        recursos: {
+          include: {
+            recurso: true,
+          },
+        },
+        usuario: {
+          select: {
+            id: true,
+            nombre: true,
+            apellido: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return pendientes.map((p) => ({
+      id: p.id,
+      usuarioId: p.usuarioId,
+      usuario: p.usuario,
+      fechaHoraInicio: p.fechaHoraDeseadaInicio,
+      fechaHoraFin: p.fechaHoraDeseadaFin,
+      fechaLimiteCheckIn: p.fechaHoraDeseadaInicio,
+      fechaHoraConfirmacion: null,
+      fechaHoraCancelacion: null,
+      fechaHoraCheckIn: null,
+      fechaHoraCheckOut: null,
+      motivoCancelacion: null,
+      observacion: null,
+      fechaExpiracionHold: new Date(
+        p.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+      ),
+      confirmada: false,
+      esPendiente: true,
+      recursos: p.recursos,
+    }));
+  }
+
   if (filtros.estado === "activas") {
     where.fechaHoraCancelacion = null;
-    where.fechaHoraConfirmacion = { not: null };
     where.fechaHoraFin = { gt: ahora };
-  } else if (filtros.estado === "pendientes") {
-    where.fechaHoraCancelacion = null;
-    where.fechaHoraConfirmacion = null;
-    where.fechaExpiracionHold = { gt: ahora };
   } else if (filtros.estado === "canceladas") {
     where.fechaHoraCancelacion = { not: null };
   } else if (filtros.estado === "finalizadas") {
     where.fechaHoraCancelacion = null;
-    where.fechaHoraConfirmacion = { not: null };
     where.fechaHoraFin = { lte: ahora };
   }
 
-  return prisma.reserva.findMany({
+  const reservas = await prisma.reserva.findMany({
     where,
     orderBy: {
       fechaHoraInicio: "desc",
@@ -66,6 +124,13 @@ export async function listarReservas(
       },
     },
   });
+
+  return reservas.map((r) => ({
+    ...r,
+    fechaExpiracionHold: null as Date | null,
+    confirmada: r.fechaHoraConfirmacion !== null,
+    esPendiente: false,
+  }));
 }
 
 export async function resolverTitularReserva(
@@ -156,63 +221,6 @@ export async function cancelarReserva(
   });
 }
 
-export async function confirmarReserva(
-  id: number,
-  usuarioAuth: TokenPayload,
-) {
-  return prisma.$transaction(async (tx) => {
-    const reserva = await tx.reserva.findUnique({
-      where: { id },
-      include: {
-        recursos: {
-          include: {
-            recurso: true,
-          },
-        },
-      },
-    });
-
-    if (!reserva) {
-      throw new ReservaNotFoundError("Reserva no encontrada");
-    }
-
-    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-      throw new ReservaForbiddenError(
-        "No tienes permisos para confirmar esta reserva",
-      );
-    }
-
-    if (reserva.fechaHoraCancelacion !== null) {
-      throw new ReservaConflictError("La reserva se encuentra cancelada");
-    }
-
-    if (reserva.fechaHoraConfirmacion !== null) {
-      throw new ReservaConflictError("La reserva ya ha sido confirmada previamente");
-    }
-
-    const ahora = new Date();
-    if (reserva.fechaExpiracionHold && reserva.fechaExpiracionHold < ahora) {
-      throw new ReservaConflictError(
-        "El tiempo para confirmar la reserva ha expirado. El cupo ha sido liberado.",
-      );
-    }
-
-    return tx.reserva.update({
-      where: { id },
-      data: {
-        fechaHoraConfirmacion: ahora,
-      },
-      include: {
-        recursos: {
-          include: {
-            recurso: true,
-          },
-        },
-      },
-    });
-  });
-}
-
 export async function finalizarReserva(
   id: number,
   input: FinalizarReservaInput,
@@ -277,5 +285,102 @@ export async function finalizarReserva(
         },
       },
     },
+  });
+}
+
+export async function confirmarReserva(
+  reservaPendienteId: number,
+  usuarioAuth: TokenPayload,
+) {
+  return prisma.$transaction(async (tx) => {
+    const pendiente = await tx.reservaPendiente.findUnique({
+      where: { id: reservaPendienteId },
+      include: {
+        recursos: {
+          include: {
+            recurso: true,
+          },
+        },
+      },
+    });
+
+    if (!pendiente) {
+      throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+    }
+
+    if (usuarioAuth.rol !== "ADMIN" && pendiente.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para confirmar esta reserva pendiente",
+      );
+    }
+
+    const ahora = new Date();
+    const expiracion = new Date(
+      pendiente.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+    );
+    if (ahora > expiracion) {
+      await tx.reservaPendienteRecurso.deleteMany({
+        where: { reservaPendienteId: pendiente.id },
+      });
+      await tx.reservaPendiente.delete({
+        where: { id: pendiente.id },
+      });
+      throw new ReservaConflictError(
+        "El tiempo de 10 minutos para confirmar la reserva ha expirado. El cupo ha sido liberado.",
+      );
+    }
+
+    const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
+      pendiente.fechaHoraDeseadaInicio,
+      pendiente.fechaHoraDeseadaFin,
+    );
+
+    const recursoIds = pendiente.recursos
+      .map((r) => r.recursoId)
+      .sort((a, b) => a - b);
+    if (recursoIds.length > 0) {
+      await tx.$queryRaw`
+        SELECT id FROM "Recurso"
+        WHERE id IN (${Prisma.join(recursoIds)})
+        FOR UPDATE
+      `;
+    }
+
+    const reservaConfirmada = await tx.reserva.create({
+      data: {
+        usuarioId: pendiente.usuarioId,
+        fechaHoraInicio: pendiente.fechaHoraDeseadaInicio,
+        fechaHoraFin: pendiente.fechaHoraDeseadaFin,
+        fechaLimiteCheckIn,
+        fechaHoraConfirmacion: ahora,
+        recursos: {
+          create: pendiente.recursos.map((r) => ({ recursoId: r.recursoId })),
+        },
+      },
+      include: {
+        recursos: {
+          include: {
+            recurso: true,
+          },
+        },
+        usuario: {
+          select: {
+            id: true,
+            nombre: true,
+            apellido: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    await tx.reservaPendienteRecurso.deleteMany({
+      where: { reservaPendienteId: pendiente.id },
+    });
+    await tx.reservaPendiente.delete({
+      where: { id: pendiente.id },
+    });
+
+    return reservaConfirmada;
   });
 }

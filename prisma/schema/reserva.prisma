@@ -8,7 +8,6 @@ model Reserva {
   fechaHoraFin          DateTime
   fechaLimiteCheckIn    DateTime
   fechaHoraConfirmacion DateTime?
-  fechaExpiracionHold   DateTime?
   fechaHoraCancelacion  DateTime?
   motivoCancelacion     String?
   fechaHoraCheckIn      DateTime?

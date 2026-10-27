@@ -39,40 +39,37 @@ En una base nueva, aplicar las migraciones con `pnpm exec prisma migrate deploy 
 La base Railway configurada actualmente tiene otro historial y otra estructura de tablas:
 hay que conciliar esa base con el esquema del repositorio antes de aplicar migraciones allí.
 
-## Reservas
+## Reservas y Control de Concurrencia (Hold Temporal de 10 min)
 
 - `GET /api/reservas`: Listar reservas para el usuario autenticado.
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Query params opcionales**:
-    - `estado`: `activas`, `pendientes`, `canceladas`, `finalizadas` o `todas`.
+    - `estado`: `activas`, `canceladas`, `finalizadas`, `pendientes` o `todas`.
     - `usuarioId`: ID del usuario a consultar (solo permitido para usuarios con rol `ADMIN`).
   - **Reglas de negocio**:
-    - Usuarios comunes (`UTN` / `EXTERNO`): Reciben únicamente sus propias reservas.
+    - Usuarios comunes (`UTN` / `EXTERNO`): Reciben únicamente sus propias reservas o holds pendientes.
     - Administradores (`ADMIN`): Reciben todas las reservas o las del `usuarioId` indicado.
-  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`. Cada reserva expone `fechaExpiracionHold`, `fechaHoraConfirmacion` y `confirmada`.
+  - **Retorno**: `200` con array `{ data: [ ...reservas ] }`.
 
-- `POST /api/reservas`: Crear una reserva para recursos/espacios (RF-11) con Hold temporal de 10 minutos.
+- `POST /api/reservas`: Iniciar una reserva de recursos/espacios con control de concurrencia pesimista (`FOR UPDATE`).
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
+  - **Flujo de Reserva Pendiente (Hold de 10 minutos)**:
+    - Para usuarios comunes (`UTN`, `EXTERNO`), la solicitud aparta temporalmente el cupo en el modelo `ReservaPendiente` por **10 minutos**, bloqueando de forma segura e inmediata la disponibilidad para otros usuarios concurrentes.
+    - Los administradores (`ADMIN`) pueden especificar `"confirmarInmediato": true` para crear la reserva confirmada de forma directa sin pasar por el estado de hold.
   - **Titular de la reserva**:
-    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`. Inician en estado de reserva temporal ("Hold" de 10 minutos) que debe confirmarse posteriormente.
-    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o en nombre de otro usuario especificando `usuarioId` en el cuerpo, y opcionalmente puede enviar `"confirmarInmediato": true` para omitir el hold y confirmarla directamente.
-  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "fechaLimiteCheckIn": "...", "observacion": "...", "confirmarInmediato": false }` (`usuarioId` y `fechaLimiteCheckIn` son opcionales; el backend calcula automáticamente la fecha límite de check-in con 15 minutos de tolerancia posterior al inicio).
-  - **Reglas de negocio**:
-    - Retorna `201` con la reserva en estado Hold (o confirmada).
-    - Retorna `409` si el recurso ya fue apartado o reservado por otro usuario concurrente (protegido por `SELECT ... FOR UPDATE`).
-    - Retorna `400` si el rango horario es inválido.
-    - Retorna `401` si no está autenticado o el token es inválido.
-    - Retorna `403` si un usuario no administrador intenta reservar a nombre de otro o usar `confirmarInmediato`.
-    - Retorna `404` si el `usuarioId` destino indicado por un administrador no existe.
+    - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`.
+    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "confirmarInmediato": false, "observacion": "..." }`.
+  - **Retorno**: `201` con los datos de la `ReservaPendiente` (incluye `fechaExpiracionHold` y `esPendiente: true`) o de la `Reserva` confirmada.
 
-- `POST /api/reservas/:id/confirmar`: Confirmar una reserva en estado Hold.
+- `POST /api/reservas/:id/confirmar`: Confirmar definitivamente una reserva pendiente (Hold).
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
-  - **Autorización**: El usuario autenticado debe ser el titular de la reserva o Administrador.
+  - **Parámetro de ruta**: `id` de la `ReservaPendiente`.
   - **Reglas de negocio**:
-    - Retorna `200` con la reserva confirmada y consolida el turno definitivamente.
-    - Retorna `404` si la reserva no existe.
-    - Retorna `403` si el usuario no es el titular ni administrador.
-    - Retorna `409` si la reserva ya está confirmada, ya fue cancelada, o su tiempo de Hold (10 min) expiró.
+    - Debe ejecutarse dentro de los 10 minutos desde la creación del Hold.
+    - Al confirmar, convierte atómicamente la `ReservaPendiente` en una `Reserva` confirmada definitiva y elimina la reserva pendiente.
+    - Si pasaron más de 10 minutos, retorna `409 Conflict`, elimina el Hold y libera el cupo.
+    - Un proceso en segundo plano ejecuta automáticamente la limpieza de holds expirados cada 60 segundos (`limpiarHoldsExpirados`).
 
 ## Cancelación de Reservas
 

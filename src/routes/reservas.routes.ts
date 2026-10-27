@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
   crearReserva,
   DisponibilidadError,
+  DURACION_HOLD_MINUTOS,
 } from "../services/disponibilidad.service.js";
 import {
   cancelarReserva,
@@ -75,7 +76,7 @@ const reservaRequestSchema = z.object({
     .optional()
     .openapi({
       description:
-        "Confirmar inmediatamente la reserva sin hold temporal (solo administradores)",
+        "Confirmar inmediatamente sin pasar por reserva pendiente (solo administradores)",
     }),
 });
 
@@ -88,6 +89,7 @@ const reservaResponseSchema = z.object({
   fechaHoraConfirmacion: z.string().nullable().optional(),
   fechaExpiracionHold: z.string().nullable().optional(),
   confirmada: z.boolean().optional(),
+  esPendiente: z.boolean().optional(),
   observacion: z.string().nullable(),
   recursos: z.array(
     z.object({
@@ -106,7 +108,7 @@ const crearReservaRoute = createRoute({
   tags: ["Reservas"],
   summary: "Reservar un espacio y sus recursos",
   description:
-    "Crea una reserva de recursos. Para usuarios comunes inicia en estado de reserva temporal (Hold de 10 min) y requiere confirmación posterior. Los administradores pueden además reservar en nombre de otros usuarios o confirmar de forma inmediata.",
+    "Crea una reserva de recursos. Los usuarios comunes inician una Reserva Pendiente (Hold de 10 min) que debe confirmarse. Los administradores pueden además reservar en nombre de otros usuarios o confirmar de forma inmediata.",
   security: [{ Bearer: [] }],
   request: {
     body: {
@@ -122,9 +124,9 @@ const crearReservaRoute = createRoute({
           schema: z.object({ data: reservaResponseSchema }),
         },
       },
-      description: "Reserva iniciada exitosamente (en hold o confirmada)",
+      description: "Reserva iniciada exitosamente (en reserva pendiente o confirmada)",
     },
-    400: errorResponse("Solicitud inválida o rango horario no disponible"),
+    400: errorResponse("Solicitud inválida o recursos no disponibles"),
     401: unauthorizedResponse,
     403: errorResponse("No autorizado para reservar en nombre de otro usuario o confirmar de inmediato"),
     404: errorResponse("El usuario especificado no existe"),
@@ -151,7 +153,8 @@ reservas.openapi(listarReservasRoute, async (c) => {
           reserva.fechaHoraConfirmacion?.toISOString() ?? null,
         fechaExpiracionHold:
           reserva.fechaExpiracionHold?.toISOString() ?? null,
-        confirmada: reserva.fechaHoraConfirmacion !== null,
+        confirmada: reserva.confirmada,
+        esPendiente: reserva.esPendiente,
         fechaHoraCancelacion:
           reserva.fechaHoraCancelacion?.toISOString() ?? null,
         fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
@@ -177,24 +180,52 @@ reservas.openapi(crearReservaRoute, async (c) => {
 
     const titularId = await resolverTitularReserva(body.usuarioId, usuarioAuth);
 
-    const reserva = await crearReserva({
+    const resultado = await crearReserva({
       ...body,
       usuarioId: titularId,
     });
 
+    // Si es una Reserva confirmada inmediatamente por ADMIN:
+    if ("fechaHoraInicio" in resultado) {
+      return c.json(
+        {
+          data: {
+            id: resultado.id,
+            usuarioId: resultado.usuarioId,
+            fechaHoraInicio: resultado.fechaHoraInicio.toISOString(),
+            fechaHoraFin: resultado.fechaHoraFin.toISOString(),
+            fechaLimiteCheckIn: resultado.fechaLimiteCheckIn.toISOString(),
+            fechaHoraConfirmacion:
+              resultado.fechaHoraConfirmacion?.toISOString() ?? null,
+            fechaExpiracionHold: null,
+            confirmada: true,
+            esPendiente: false,
+            observacion: resultado.observacion ?? null,
+            recursos: resultado.recursos,
+          },
+        },
+        201,
+      );
+    }
+
+    // Si es una ReservaPendiente (Hold temporal de 10 minutos):
+    const expiracionHold = new Date(
+      resultado.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+    );
     return c.json(
       {
         data: {
-          ...reserva,
-          fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
-          fechaHoraFin: reserva.fechaHoraFin.toISOString(),
-          fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
-          fechaHoraConfirmacion:
-            reserva.fechaHoraConfirmacion?.toISOString() ?? null,
-          fechaExpiracionHold:
-            reserva.fechaExpiracionHold?.toISOString() ?? null,
-          confirmada: reserva.fechaHoraConfirmacion !== null,
-          recursos: reserva.recursos,
+          id: resultado.id,
+          usuarioId: resultado.usuarioId,
+          fechaHoraInicio: resultado.fechaHoraDeseadaInicio.toISOString(),
+          fechaHoraFin: resultado.fechaHoraDeseadaFin.toISOString(),
+          fechaLimiteCheckIn: resultado.fechaHoraDeseadaInicio.toISOString(),
+          fechaHoraConfirmacion: null,
+          fechaExpiracionHold: expiracionHold.toISOString(),
+          confirmada: false,
+          esPendiente: true,
+          observacion: body.observacion ?? null,
+          recursos: resultado.recursos,
         },
       },
       201,
@@ -221,9 +252,9 @@ const confirmarReservaRoute = createRoute({
   method: "post",
   path: "/{id}/confirmar",
   tags: ["Reservas"],
-  summary: "Confirmar una reserva temporal en hold",
+  summary: "Confirmar una reserva pendiente (Hold)",
   description:
-    "Confirma una reserva temporalmente apartada (hold de 10 min) antes de que expire su tiempo límite.",
+    "Confirma una reserva pendiente en hold convirtiéndola en reserva definitiva. Debe realizarse dentro de los 10 minutos de la solicitud.",
   security: [{ Bearer: [] }],
   request: {
     params: confirmarReservaParamsSchema,
@@ -236,9 +267,9 @@ const confirmarReservaRoute = createRoute({
       description: "Reserva confirmada exitosamente",
     },
     401: unauthorizedResponse,
-    403: errorResponse("No tienes permisos para confirmar esta reserva"),
-    404: errorResponse("Reserva no encontrada"),
-    409: errorResponse("La reserva ya fue confirmada, está cancelada o su tiempo de hold expiró"),
+    403: errorResponse("No tienes permisos para confirmar esta reserva pendiente"),
+    404: errorResponse("Reserva pendiente no encontrada"),
+    409: errorResponse("El tiempo para confirmar ha expirado o el recurso no está disponible"),
   },
 });
 
@@ -258,11 +289,13 @@ reservas.openapi(confirmarReservaRoute, async (c) => {
           fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
           fechaHoraConfirmacion:
             reserva.fechaHoraConfirmacion?.toISOString() ?? null,
-          fechaExpiracionHold:
-            reserva.fechaExpiracionHold?.toISOString() ?? null,
+          fechaExpiracionHold: null,
           confirmada: true,
+          esPendiente: false,
           fechaHoraCancelacion:
             reserva.fechaHoraCancelacion?.toISOString() ?? null,
+          fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
+          fechaHoraCheckOut: reserva.fechaHoraCheckOut?.toISOString() ?? null,
           recursos: reserva.recursos,
         },
       },
@@ -331,11 +364,6 @@ reservas.openapi(cancelarReservaRoute, async (c) => {
           fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
           fechaHoraFin: reserva.fechaHoraFin.toISOString(),
           fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
-          fechaHoraConfirmacion:
-            reserva.fechaHoraConfirmacion?.toISOString() ?? null,
-          fechaExpiracionHold:
-            reserva.fechaExpiracionHold?.toISOString() ?? null,
-          confirmada: reserva.fechaHoraConfirmacion !== null,
           fechaHoraCancelacion:
             reserva.fechaHoraCancelacion?.toISOString() ?? null,
           recursos: reserva.recursos,

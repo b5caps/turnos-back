@@ -39,6 +39,7 @@ export const reservaDetalleSchema = z.object({
   fechaHoraConfirmacion: z.string().nullable().optional(),
   fechaExpiracionHold: z.string().nullable().optional(),
   confirmada: z.boolean().optional(),
+  esPendiente: z.boolean().optional(),
   fechaHoraCancelacion: z.string().nullable(),
   motivoCancelacion: z.string().nullable(),
   fechaHoraCheckIn: z.string().nullable().optional(),
@@ -102,7 +103,7 @@ export const confirmarReservaParamsSchema = z.object({
         in: "path",
       },
       example: 1,
-      description: "ID de la reserva a confirmar",
+      description: "ID de la reserva pendiente a confirmar",
     }),
 });
 

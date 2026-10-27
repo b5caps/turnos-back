@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import { ReservaConflictError } from "./reservas.service.js";
 
 const prisma = new PrismaClient();
@@ -116,14 +116,24 @@ async function consultarDisponibilidadPorTipo(
             fechaHoraCancelacion: null,
             fechaHoraInicio: { lt: finDia },
             fechaHoraFin: { gt: inicioDia },
-            OR: [
-              { fechaHoraConfirmacion: { not: null } },
-              { fechaExpiracionHold: { gt: new Date() } },
-            ],
           },
         },
         include: {
           reserva: true,
+        },
+      },
+      reservasPendientes: {
+        where: {
+          reservaPendiente: {
+            fechaHoraSolicitud: {
+              gt: new Date(Date.now() - DURACION_HOLD_MINUTOS * 60 * 1000),
+            },
+            fechaHoraDeseadaInicio: { lt: finDia },
+            fechaHoraDeseadaFin: { gt: inicioDia },
+          },
+        },
+        include: {
+          reservaPendiente: true,
         },
       },
     },
@@ -149,20 +159,30 @@ async function consultarDisponibilidadPorTipo(
     minActual = minSiguiente;
   }
 
+  const ahora = new Date();
+  const limiteHold = new Date(
+    ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+  );
+
   const recursosMapeados = recursos.map((recurso) => {
-    // Reservas activas dentro del horario del día consultado (confirmadas o holds vigentes)
-    const ahora = new Date();
+    // Reservas activas dentro del horario del día consultado
     const reservasSolapadas = recurso.reservas
       .map((rr) => rr.reserva)
       .filter((reserva) => {
         if (reserva.fechaHoraCancelacion) return false;
-        const activa =
-          reserva.fechaHoraConfirmacion !== null ||
-          (reserva.fechaExpiracionHold !== null &&
-            reserva.fechaExpiracionHold > ahora);
-        if (!activa) return false;
         return (
           reserva.fechaHoraInicio < finDia && reserva.fechaHoraFin > inicioDia
+        );
+      });
+
+    // Reservas pendientes activas (hold no expirado) dentro del horario consultado
+    const pendientesSolapadas = recurso.reservasPendientes
+      .map((rp) => rp.reservaPendiente)
+      .filter((pendiente) => {
+        return (
+          pendiente.fechaHoraSolicitud > limiteHold &&
+          pendiente.fechaHoraDeseadaInicio < finDia &&
+          pendiente.fechaHoraDeseadaFin > inicioDia
         );
       });
 
@@ -186,14 +206,21 @@ async function consultarDisponibilidadPorTipo(
           );
         });
 
-        // Reservas activas que solapan este bloque de 15 minutos
+        // Reservas confirmadas que solapan este bloque de 15 minutos
         const reservasBloque = reservasSolapadas.filter((reserva) => {
           return (
             reserva.fechaHoraInicio < bFin && reserva.fechaHoraFin > bInicio
           );
         });
 
-        const ocupacion = reservasBloque.length;
+        // Reservas pendientes (holds) que solapan este bloque de 15 minutos
+        const pendientesBloque = pendientesSolapadas.filter((p) => {
+          return (
+            p.fechaHoraDeseadaInicio < bFin && p.fechaHoraDeseadaFin > bInicio
+          );
+        });
+
+        const ocupacion = reservasBloque.length + pendientesBloque.length;
         const cuposLibres = Math.max(0, recurso.capacidad - ocupacion);
 
         let motivoNoDisponible:
@@ -259,48 +286,31 @@ export async function crearReserva(input: CrearReservaInput) {
     throw new DisponibilidadError("El rango horario no es válido");
   }
 
-  const recursoIds = [...new Set(input.recursoIds)].sort((a, b) => a - b);
-  if (recursoIds.length === 0) {
+  if (!input.recursoIds || input.recursoIds.length === 0) {
     throw new DisponibilidadError("Debe seleccionar al menos un recurso");
   }
 
+  const recursoIds: number[] = [...new Set(input.recursoIds)].sort(
+    (a, b) => a - b,
+  );
+  const ahora = new Date();
+  const limiteHold = new Date(
+    ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+  );
   const fechaLimiteCalculada = calcularFechaLimiteCheckIn(inicio, fin);
-
   const fechaLimiteCheckIn = input.fechaLimiteCheckIn
     ? new Date(input.fechaLimiteCheckIn)
     : fechaLimiteCalculada;
-
-  if (Number.isNaN(fechaLimiteCheckIn.getTime())) {
-    throw new DisponibilidadError("La fecha límite de check-in no es válida");
-  }
-
-  const limiteMaximoTolerancia = new Date(
-    Math.min(
-      inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
-      fin.getTime(),
-    ),
-  );
-
-  if (
-    fechaLimiteCheckIn < inicio ||
-    fechaLimiteCheckIn > limiteMaximoTolerancia
-  ) {
-    throw new DisponibilidadError(
-      `La fecha límite de check-in debe situarse entre el inicio del turno y hasta ${MINUTOS_TOLERANCIA_CHECK_IN} minutos posteriores (tolerancia máxima sin exceder el fin de la reserva)`,
-    );
-  }
-
-  const ahora = new Date();
 
   return prisma.$transaction(async (tx) => {
     // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
     await tx.$queryRaw`
       SELECT id FROM "Recurso"
-      WHERE id = ANY(${recursoIds})
+      WHERE id IN (${Prisma.join(recursoIds)})
       FOR UPDATE
     `;
 
-    // 2. Obtener recursos con sus bloqueos y reservas activas solapadas
+    // 2. Obtener recursos con sus bloqueos, reservas y reservas pendientes activas
     const diaSemana = inicio.getDay();
     const recursos = await tx.recurso.findMany({
       where: {
@@ -330,14 +340,22 @@ export async function crearReserva(input: CrearReservaInput) {
               fechaHoraCancelacion: null,
               fechaHoraInicio: { lt: fin },
               fechaHoraFin: { gt: inicio },
-              OR: [
-                { fechaHoraConfirmacion: { not: null } },
-                { fechaExpiracionHold: { gt: ahora } },
-              ],
             },
           },
           include: {
             reserva: true,
+          },
+        },
+        reservasPendientes: {
+          where: {
+            reservaPendiente: {
+              fechaHoraSolicitud: { gt: limiteHold },
+              fechaHoraDeseadaInicio: { lt: fin },
+              fechaHoraDeseadaFin: { gt: inicio },
+            },
+          },
+          include: {
+            reservaPendiente: true,
           },
         },
       },
@@ -371,8 +389,9 @@ export async function crearReserva(input: CrearReservaInput) {
         );
       }
 
-      // Validar capacidad disponible
-      const ocupacion = recurso.reservas.length;
+      // Validar capacidad disponible considerando reservas confirmadas y reservas pendientes (holds)
+      const ocupacion =
+        recurso.reservas.length + recurso.reservasPendientes.length;
       if (ocupacion >= recurso.capacidad) {
         throw new ReservaConflictError(
           `El recurso ${recurso.nombre} se encuentra temporalmente apartado o reservado por otro usuario en ese horario`,
@@ -380,24 +399,36 @@ export async function crearReserva(input: CrearReservaInput) {
       }
     }
 
-    // 3. Determinar confirmación inmediata o Hold de 10 minutos
-    const esConfirmacionInmediata = Boolean(input.confirmarInmediato);
-    const fechaHoraConfirmacion = esConfirmacionInmediata ? ahora : null;
-    const fechaExpiracionHold = esConfirmacionInmediata
-      ? null
-      : new Date(ahora.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000);
+    // 3. Si es ADMIN y solicitó confirmación inmediata: Crear directamente la Reserva
+    if (input.confirmarInmediato) {
+      return tx.reserva.create({
+        data: {
+          usuarioId: input.usuarioId,
+          fechaHoraInicio: inicio,
+          fechaHoraFin: fin,
+          fechaLimiteCheckIn,
+          fechaHoraConfirmacion: ahora,
+          observacion: input.observacion,
+          recursos: {
+            create: recursoIds.map((recursoId: number) => ({ recursoId })),
+          },
+        },
+        include: {
+          recursos: {
+            include: { recurso: true },
+          },
+        },
+      });
+    }
 
-    return tx.reserva.create({
+    // 4. Usuario común (o admin sin confirmación inmediata): Crear ReservaPendiente (Hold de 10 min)
+    return tx.reservaPendiente.create({
       data: {
         usuarioId: input.usuarioId,
-        fechaHoraInicio: inicio,
-        fechaHoraFin: fin,
-        fechaLimiteCheckIn,
-        fechaHoraConfirmacion,
-        fechaExpiracionHold,
-        observacion: input.observacion,
+        fechaHoraDeseadaInicio: inicio,
+        fechaHoraDeseadaFin: fin,
         recursos: {
-          create: recursoIds.map((recursoId) => ({ recursoId })),
+          create: recursoIds.map((recursoId: number) => ({ recursoId })),
         },
       },
       include: {
