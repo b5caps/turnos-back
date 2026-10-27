@@ -8,6 +8,7 @@ import {
   cancelarReserva,
   confirmarReserva,
   finalizarReserva,
+
   listarReservas,
   resolverTitularReserva,
   ReservaBusinessError,
@@ -21,6 +22,7 @@ import {
   cancelarReservaResponseSchema,
   confirmarReservaParamsSchema,
   confirmarReservaResponseSchema,
+
   errorResponse,
   errorSchema,
   finalizarReservaBodySchema,
@@ -435,8 +437,6 @@ const finalizarReservaRoute = createRoute({
     },
   },
 });
-
-reservas.use("/:id/finalizar", requireAuth);
 
 reservas.openapi(finalizarReservaRoute, async (c) => {
   try {

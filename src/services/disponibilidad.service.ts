@@ -302,6 +302,27 @@ export async function crearReserva(input: CrearReservaInput) {
     ? new Date(input.fechaLimiteCheckIn)
     : fechaLimiteCalculada;
 
+  if (Number.isNaN(fechaLimiteCheckIn.getTime())) {
+    throw new DisponibilidadError("La fecha límite de check-in no es válida");
+  }
+
+  const limiteMaximoTolerancia = new Date(
+    Math.min(
+      inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
+      fin.getTime(),
+    ),
+  );
+
+  if (
+    fechaLimiteCheckIn < inicio ||
+    fechaLimiteCheckIn > limiteMaximoTolerancia
+  ) {
+    throw new DisponibilidadError(
+      `La fecha límite de check-in debe situarse entre el inicio del turno y hasta ${MINUTOS_TOLERANCIA_CHECK_IN} minutos posteriores (tolerancia máxima sin exceder el fin de la reserva)`,
+    );
+  }
+
+
   return prisma.$transaction(async (tx) => {
     // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
     await tx.$queryRaw`

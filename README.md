@@ -58,13 +58,14 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
     - Los administradores (`ADMIN`) pueden especificar `"confirmarInmediato": true` para crear la reserva confirmada de forma directa sin pasar por el estado de hold.
   - **Titular de la reserva**:
     - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`.
-    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
-  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "confirmarInmediato": false, "observacion": "..." }`.
+    - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre (ej. reserva institucional / bloqueo de periodo determinado) o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "confirmarInmediato": false, "observacion": "..." }` (`usuarioId` y `fechaLimiteCheckIn` son opcionales; el backend calcula automáticamente la fecha límite de check-in con 15 minutos de tolerancia posterior al inicio).
   - **Retorno**: `201` con los datos de la `ReservaPendiente` (incluye `fechaExpiracionHold` y `esPendiente: true`) o de la `Reserva` confirmada.
 
 - `POST /api/reservas/:id/confirmar`: Confirmar definitivamente una reserva pendiente (Hold).
   - **Autenticación**: Requiere header `Authorization: Bearer <token>`.
   - **Parámetro de ruta**: `id` de la `ReservaPendiente`.
+
   - **Reglas de negocio**:
     - Debe ejecutarse dentro de los 10 minutos desde la creación del Hold.
     - Al confirmar, convierte atómicamente la `ReservaPendiente` en una `Reserva` confirmada definitiva y elimina la reserva pendiente.
