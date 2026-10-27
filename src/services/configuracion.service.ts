@@ -15,17 +15,13 @@ const VALORES_POR_DEFECTO = {
 export class ConfiguracionBusinessError extends Error {}
 
 export async function obtenerConfiguracion() {
-  const model = (prisma as unknown as Record<string, any>).configuracion;
+  let config = await prisma.configuracion.findUnique({
+    where: { id: 1 },
+  });
 
-  let config = model
-    ? await model.findUnique({
-        where: { id: 1 },
-      })
-    : null;
-
-  if (!config && model) {
+  if (!config) {
     try {
-      config = await model.create({
+      config = await prisma.configuracion.create({
         data: VALORES_POR_DEFECTO,
       });
     } catch {
@@ -34,11 +30,6 @@ export async function obtenerConfiguracion() {
         actualizadoEn: new Date(),
       };
     }
-  } else if (!config) {
-    config = {
-      ...VALORES_POR_DEFECTO,
-      actualizadoEn: new Date(),
-    };
   }
 
   return {
@@ -48,9 +39,7 @@ export async function obtenerConfiguracion() {
     tiempoMaximoAntelacionDias: config.tiempoMaximoAntelacionDias,
     duracionMinimaMinutos: config.duracionMinimaMinutos,
     duracionMaximaMinutos: config.duracionMaximaMinutos,
-    actualizadoEn: config.actualizadoEn
-      ? config.actualizadoEn.toISOString()
-      : new Date().toISOString(),
+    actualizadoEn: config.actualizadoEn.toISOString(),
   };
 }
 
@@ -79,24 +68,32 @@ export async function actualizarConfiguracion(
     );
   }
 
-  const model = (prisma as unknown as Record<string, any>).configuracion;
+  const dataUpdate = {
+    ...(input.minutosApertura !== undefined && {
+      minutosApertura: input.minutosApertura,
+    }),
+    ...(input.minutosCierre !== undefined && {
+      minutosCierre: input.minutosCierre,
+    }),
+    ...(input.tiempoMaximoAntelacionDias !== undefined && {
+      tiempoMaximoAntelacionDias: input.tiempoMaximoAntelacionDias,
+    }),
+    ...(input.duracionMinimaMinutos !== undefined && {
+      duracionMinimaMinutos: input.duracionMinimaMinutos,
+    }),
+    ...(input.duracionMaximaMinutos !== undefined && {
+      duracionMaximaMinutos: input.duracionMaximaMinutos,
+    }),
+  };
 
-  const actualizado = model
-    ? await model.upsert({
-        where: { id: 1 },
-        update: {
-          ...input,
-        },
-        create: {
-          ...VALORES_POR_DEFECTO,
-          ...input,
-        },
-      })
-    : {
-        ...VALORES_POR_DEFECTO,
-        ...input,
-        actualizadoEn: new Date(),
-      };
+  const actualizado = await prisma.configuracion.upsert({
+    where: { id: 1 },
+    update: dataUpdate,
+    create: {
+      ...VALORES_POR_DEFECTO,
+      ...dataUpdate,
+    },
+  });
 
   return {
     id: actualizado.id,

@@ -4,12 +4,36 @@ import type {
   CrearEspacioInput,
   ListarEspaciosQuery,
 } from "../schemas/espacios.schema.js";
+import { obtenerConfiguracion } from "./configuracion.service.js";
 
 const prisma = new PrismaClient();
 
 export class EspacioNotFoundError extends Error {}
 export class EspacioConflictError extends Error {}
 export class EspacioBusinessError extends Error {}
+
+const DIAS_POR_DEFECTO = [1, 2, 3, 4, 5, 6]; // Lunes a Sábado
+
+function mapearEspacio(
+  r: Prisma.RecursoGetPayload<{
+    include: { sala: true; disponibilidades: true };
+  }>,
+) {
+  return {
+    id: r.id,
+    nombre: r.nombre,
+    descripcion: r.descripcion,
+    capacidad: r.capacidad,
+    activo: r.activo,
+    ubicacion: r.sala?.ubicacion ?? "",
+    disponibilidades: r.disponibilidades.map((d) => ({
+      id: d.id,
+      diaSemana: d.diaSemana,
+      minutosInicio: d.minutosInicio,
+      minutosFin: d.minutosFin,
+    })),
+  };
+}
 
 export async function listarEspacios(query: ListarEspaciosQuery) {
   const where: Prisma.RecursoWhereInput = {
@@ -26,20 +50,16 @@ export async function listarEspacios(query: ListarEspaciosQuery) {
     where,
     include: {
       sala: true,
+      disponibilidades: {
+        orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+      },
     },
     orderBy: {
       nombre: "asc",
     },
   });
 
-  return recursos.map((r) => ({
-    id: r.id,
-    nombre: r.nombre,
-    descripcion: r.descripcion,
-    capacidad: r.capacidad,
-    activo: (r as unknown as { activo?: boolean }).activo ?? true,
-    ubicacion: r.sala?.ubicacion ?? "",
-  }));
+  return recursos.map(mapearEspacio);
 }
 
 export async function obtenerEspacioPorId(id: number) {
@@ -50,6 +70,9 @@ export async function obtenerEspacioPorId(id: number) {
     },
     include: {
       sala: true,
+      disponibilidades: {
+        orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+      },
     },
   });
 
@@ -57,17 +80,21 @@ export async function obtenerEspacioPorId(id: number) {
     throw new EspacioNotFoundError("Espacio no encontrado");
   }
 
-  return {
-    id: r.id,
-    nombre: r.nombre,
-    descripcion: r.descripcion,
-    capacidad: r.capacidad,
-    activo: (r as unknown as { activo?: boolean }).activo ?? true,
-    ubicacion: r.sala.ubicacion,
-  };
+  return mapearEspacio(r);
 }
 
 export async function crearEspacio(input: CrearEspacioInput) {
+  let franjasDisponibilidad = input.disponibilidades;
+
+  if (!franjasDisponibilidad || franjasDisponibilidad.length === 0) {
+    const config = await obtenerConfiguracion();
+    franjasDisponibilidad = DIAS_POR_DEFECTO.map((diaSemana) => ({
+      diaSemana,
+      minutosInicio: config.minutosApertura,
+      minutosFin: config.minutosCierre,
+    }));
+  }
+
   return prisma.$transaction(async (tx) => {
     const data: Prisma.RecursoCreateInput = {
       nombre: input.nombre,
@@ -79,23 +106,26 @@ export async function crearEspacio(input: CrearEspacioInput) {
           ubicacion: input.ubicacion,
         },
       },
+      disponibilidades: {
+        create: franjasDisponibilidad.map((d) => ({
+          diaSemana: d.diaSemana,
+          minutosInicio: d.minutosInicio,
+          minutosFin: d.minutosFin,
+        })),
+      },
     };
 
     const recurso = await tx.recurso.create({
       data,
       include: {
         sala: true,
+        disponibilidades: {
+          orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+        },
       },
     });
 
-    return {
-      id: recurso.id,
-      nombre: recurso.nombre,
-      descripcion: recurso.descripcion,
-      capacidad: recurso.capacidad,
-      activo: (recurso as unknown as { activo?: boolean }).activo ?? true,
-      ubicacion: recurso.sala!.ubicacion,
-    };
+    return mapearEspacio(recurso);
   });
 }
 
@@ -132,20 +162,35 @@ export async function actualizarEspacio(
       });
     }
 
+    if (input.disponibilidades !== undefined) {
+      await tx.disponibilidad.deleteMany({
+        where: { recursoId: id },
+      });
+
+      if (input.disponibilidades.length > 0) {
+        await tx.disponibilidad.createMany({
+          data: input.disponibilidades.map((d) => ({
+            recursoId: id,
+            diaSemana: d.diaSemana,
+            minutosInicio: d.minutosInicio,
+            minutosFin: d.minutosFin,
+          })),
+        });
+      }
+    }
+
     const recurso = await tx.recurso.update({
       where: { id },
       data: dataRecurso,
-      include: { sala: true },
+      include: {
+        sala: true,
+        disponibilidades: {
+          orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+        },
+      },
     });
 
-    return {
-      id: recurso.id,
-      nombre: recurso.nombre,
-      descripcion: recurso.descripcion,
-      capacidad: recurso.capacidad,
-      activo: (recurso as unknown as { activo?: boolean }).activo ?? true,
-      ubicacion: recurso.sala!.ubicacion,
-    };
+    return mapearEspacio(recurso);
   });
 }
 
@@ -195,21 +240,19 @@ export async function eliminarODesactivarEspacio(id: number) {
     const recurso = await prisma.recurso.update({
       where: { id },
       data: { activo: false },
-      include: { sala: true },
+      include: {
+        sala: true,
+        disponibilidades: {
+          orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+        },
+      },
     });
 
     return {
       message:
         "El espacio posee historial de reservas asociadas y ha sido desactivado lógicamente para preservar la integridad histórica.",
       desactivado: true,
-      data: {
-        id: recurso.id,
-        nombre: recurso.nombre,
-        descripcion: recurso.descripcion,
-        capacidad: recurso.capacidad,
-        activo: false,
-        ubicacion: recurso.sala!.ubicacion,
-      },
+      data: mapearEspacio(recurso),
     };
   }
 
