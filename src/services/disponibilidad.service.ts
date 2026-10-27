@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { obtenerConfiguracion } from "./configuracion.service.js";
 
 const prisma = new PrismaClient();
 
@@ -55,13 +56,20 @@ async function consultarDisponibilidadPorTipo(
   const fechaConsultada = new Date(año, mes - 1, dia);
   const diaSemana = fechaConsultada.getDay();
 
+  const config = await obtenerConfiguracion();
+
   // Horarios de apertura y cierre del establecimiento para el día consultado
   const disponibilidadesDia = await prisma.disponibilidad.findMany({
-    where: { diaSemana },
+    where: {
+      diaSemana,
+      recurso: {
+        activo: true,
+      },
+    },
   });
 
-  let minutosApertura = 480; // 08:00 por defecto
-  let minutosCierre = 1320; // 22:00 por defecto
+  let minutosApertura = config.minutosApertura;
+  let minutosCierre = config.minutosCierre;
 
   if (disponibilidadesDia.length > 0) {
     minutosApertura = Math.min(
@@ -81,9 +89,12 @@ async function consultarDisponibilidadPorTipo(
   const finDia = new Date(fechaConsultada.getTime() + minutosCierre * 60000);
 
   const recursos = await prisma.recurso.findMany({
-    where: input.tipo
-      ? { [input.tipo === "SALA" ? "sala" : "notebook"]: { isNot: null } }
-      : undefined,
+    where: {
+      activo: true,
+      ...(input.tipo
+        ? { [input.tipo === "SALA" ? "sala" : "notebook"]: { isNot: null } }
+        : {}),
+    },
     include: {
       sala: true,
       notebook: true,
@@ -183,7 +194,10 @@ async function consultarDisponibilidadPorTipo(
         const cuposLibres = Math.max(0, recurso.capacidad - ocupacion);
 
         let motivoNoDisponible:
-          "fuera_de_horario" | "bloqueado" | "sin_cupos" | null = null;
+          | "fuera_de_horario"
+          | "bloqueado"
+          | "sin_cupos"
+          | null = null;
         if (!dentroDeHorario) {
           motivoNoDisponible = "fuera_de_horario";
         } else if (hayBloqueo) {
@@ -243,6 +257,30 @@ export async function crearReserva(input: CrearReservaInput) {
     inicio >= fin
   ) {
     throw new DisponibilidadError("El rango horario no es válido");
+  }
+
+  const config = await obtenerConfiguracion();
+
+  const duracionMinutos = (fin.getTime() - inicio.getTime()) / 60000;
+  if (duracionMinutos < config.duracionMinimaMinutos) {
+    throw new DisponibilidadError(
+      `La duración de la reserva debe ser de al menos ${config.duracionMinimaMinutos} minutos`,
+    );
+  }
+
+  if (duracionMinutos > config.duracionMaximaMinutos) {
+    throw new DisponibilidadError(
+      `La duración de la reserva no puede superar los ${config.duracionMaximaMinutos} minutos`,
+    );
+  }
+
+  const limiteAntelacion = new Date(
+    Date.now() + config.tiempoMaximoAntelacionDias * 24 * 60 * 60 * 1000,
+  );
+  if (inicio > limiteAntelacion) {
+    throw new DisponibilidadError(
+      `No se pueden realizar reservas con más de ${config.tiempoMaximoAntelacionDias} días de antelación`,
+    );
   }
 
   const recursoIds = [...new Set(input.recursoIds)];
