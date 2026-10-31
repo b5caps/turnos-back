@@ -6,6 +6,7 @@ import { swaggerUI } from "@hono/swagger-ui";
 import recursosRoutes from "./routes/recursos.routes.js";
 import reservasRoutes from "./routes/reservas.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
 
 const app = new OpenAPIHono();
 
@@ -17,6 +18,7 @@ app.get("/", (c) => {
 app.route("/api/recursos", recursosRoutes);
 app.route("/api/reservas", reservasRoutes);
 app.route("/api/auth", authRoutes);
+app.route("/api/dashboard", dashboardRoutes);
 
 app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
   type: "http",
