@@ -6,37 +6,88 @@ export const errorSchema = z.object({
   }),
 });
 
-export const dashboardQuerySchema = z.object({
-  fecha: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "El formato de fecha debe ser YYYY-MM-DD")
-    .optional()
-    .openapi({
-      param: {
-        name: "fecha",
-        in: "query",
-      },
+const periodoSchema = z.enum(["diario", "mensual", "anual"]);
+
+const fechaSchema = z.iso.date(
+  "La fecha debe ser válida y tener formato YYYY-MM-DD",
+);
+const anioSchema = z.coerce.number().int().min(1).max(9999);
+const mesSchema = z.coerce.number().int().min(1).max(12);
+
+export const dashboardQuerySchema = z
+  .object({
+    periodo: periodoSchema.optional().openapi({
+      param: { name: "periodo", in: "query" },
+      example: "mensual",
+      description:
+        "diario requiere fecha; mensual requiere anio y mes; anual requiere anio. Sin parámetros se consulta el día actual.",
+    }),
+    fecha: fechaSchema.optional().openapi({
+      param: { name: "fecha", in: "query" },
       example: "2026-10-20",
       description:
-        "Fecha a consultar (formato YYYY-MM-DD). Por defecto la fecha actual del servidor.",
+        "Fecha requerida exclusivamente para periodo=diario. Los períodos usan la zona horaria del servidor.",
     }),
-  limiteCancelaciones: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(20)
-    .optional()
-    .default(5)
-    .openapi({
-      param: {
-        name: "limiteCancelaciones",
-        in: "query",
-      },
-      example: 5,
-      description:
-        "Cantidad máxima de cancelaciones recientes a retornar (entre 1 y 20, por defecto 5)",
+    anio: anioSchema.optional().openapi({
+      param: { name: "anio", in: "query" },
+      example: 2026,
+      description: "Año requerido para mensual y anual, entre 1 y 9999.",
     }),
-});
+    mes: mesSchema.optional().openapi({
+      param: { name: "mes", in: "query" },
+      example: 10,
+      description: "Mes requerido exclusivamente para mensual, entre 1 y 12.",
+    }),
+  })
+  .strict()
+  .superRefine((query, ctx) => {
+    const error = (campo: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [campo], message });
+
+    if (query.periodo === undefined) {
+      if (
+        query.fecha !== undefined ||
+        query.anio !== undefined ||
+        query.mes !== undefined
+      ) {
+        error("periodo", "Debe indicar periodo cuando envía fecha, anio o mes");
+      }
+      return;
+    }
+
+    if (query.periodo === "diario") {
+      if (query.fecha === undefined)
+        error("fecha", "fecha es requerida para periodo=diario");
+    } else {
+      if (query.anio === undefined)
+        error("anio", "anio es requerido para periodo=" + query.periodo);
+      if (query.fecha !== undefined)
+        error("fecha", "fecha sólo corresponde a periodo=diario");
+    }
+    if (query.periodo === "mensual" && query.mes === undefined) {
+      error("mes", "mes es requerido para periodo=mensual");
+    }
+    if (query.periodo === "diario" && query.anio !== undefined) {
+      error("anio", "anio no corresponde a periodo=diario");
+    }
+    if (query.periodo !== "mensual" && query.mes !== undefined) {
+      error("mes", "mes sólo corresponde a periodo=mensual");
+    }
+  })
+  .transform((query) => {
+    // superRefine garantiza que los campos de cada período estén presentes.
+    if (query.periodo === "mensual") {
+      return {
+        periodo: "mensual" as const,
+        anio: query.anio!,
+        mes: query.mes!,
+      };
+    }
+    if (query.periodo === "anual") {
+      return { periodo: "anual" as const, anio: query.anio! };
+    }
+    return { periodo: "diario" as const, fecha: query.fecha };
+  });
 
 export const categoriaOcupacionSchema = z.object({
   total: z.number().int().openapi({ example: 8 }),
@@ -44,62 +95,52 @@ export const categoriaOcupacionSchema = z.object({
   porcentaje: z.number().openapi({ example: 37.5 }),
 });
 
-export const ocupacionActualSchema = z.object({
-  totalRecursos: z.number().int().openapi({ example: 20 }),
-  recursosOcupados: z.number().int().openapi({ example: 6 }),
-  recursosDisponibles: z.number().int().openapi({ example: 14 }),
-  porcentajeOcupacion: z.number().openapi({ example: 30.0 }),
-  desglose: z.object({
+export const ocupacionActualSchema = z
+  .object({
     salas: categoriaOcupacionSchema,
     notebooks: categoriaOcupacionSchema,
+  })
+  .openapi({
+    description:
+      "Ocupación del momento actual, independiente del período consultado. Cada recurso se cuenta una sola vez si tiene alguna reserva no cancelada en curso; no requiere check-in.",
+  });
+
+export const reservasPeriodoSchema = z.object({
+  total: z.number().int().openapi({ example: 100 }),
+  pendientes: z.number().int().openapi({
+    example: 20,
+    description:
+      "Reservas no canceladas que todavía no comenzaron; no incluye solicitudes en lista de espera.",
   }),
+  enCurso: z.number().int().openapi({ example: 5 }),
+  finalizadas: z.number().int().openapi({ example: 65 }),
+  canceladas: z.number().int().openapi({ example: 10 }),
 });
 
-export const reservasDelDiaSchema = z.object({
-  total: z.number().int().openapi({ example: 15 }),
-  activas: z.number().int().openapi({ example: 10 }),
-  enCurso: z.number().int().openapi({ example: 4 }),
-  finalizadas: z.number().int().openapi({ example: 3 }),
-  canceladas: z.number().int().openapi({ example: 2 }),
-});
-
-export const cancelacionRecienteSchema = z.object({
-  id: z.number().int().openapi({ example: 14 }),
-  usuario: z.object({
-    id: z.number().int().openapi({ example: 2 }),
-    nombre: z.string().openapi({ example: "Juan" }),
-    apellido: z.string().openapi({ example: "Pérez" }),
-    email: z.string().openapi({ example: "juan@utn.edu.ar" }),
+const dashboardMetricasSchema = z.object({
+  reservas: reservasPeriodoSchema.openapi({
+    description:
+      "Reservas cuyo inicio pertenece al período seleccionado. Los estados se evalúan respecto al momento actual y son excluyentes: total = pendientes + enCurso + finalizadas + canceladas.",
   }),
-  recursos: z.array(
-    z.object({
-      id: z.number().int().openapi({ example: 1 }),
-      nombre: z.string().openapi({ example: "Sala Magna" }),
-    }),
-  ),
-  fechaHoraInicio: z.string().openapi({ example: "2026-10-20T14:00:00.000Z" }),
-  fechaHoraFin: z.string().openapi({ example: "2026-10-20T16:00:00.000Z" }),
-  fechaHoraCancelacion: z
-    .string()
-    .openapi({ example: "2026-10-20T11:30:00.000Z" }),
-  motivoCancelacion: z
-    .string()
-    .nullable()
-    .openapi({ example: "Imprevisto de fuerza mayor" }),
+  ocupacionActual: ocupacionActualSchema,
 });
 
 export const dashboardResponseSchema = z.object({
-  data: z.object({
-    fecha: z.string().openapi({ example: "2026-10-20" }),
-    reservasDelDia: reservasDelDiaSchema,
-    ocupacionActual: ocupacionActualSchema,
-    tasaOcupacionDia: z.number().openapi({
-      example: 42.5,
-      description:
-        "Porcentaje de horas-recurso reservadas en el día respecto a la capacidad de apertura",
+  data: z.discriminatedUnion("periodo", [
+    dashboardMetricasSchema.extend({
+      periodo: z.literal("diario"),
+      fecha: fechaSchema.openapi({ example: "2026-10-20" }),
     }),
-    cancelacionesRecientes: z.array(cancelacionRecienteSchema),
-  }),
+    dashboardMetricasSchema.extend({
+      periodo: z.literal("mensual"),
+      anio: z.number().int().min(1).max(9999).openapi({ example: 2026 }),
+      mes: z.number().int().min(1).max(12).openapi({ example: 10 }),
+    }),
+    dashboardMetricasSchema.extend({
+      periodo: z.literal("anual"),
+      anio: z.number().int().min(1).max(9999).openapi({ example: 2026 }),
+    }),
+  ]),
 });
 
 export type DashboardQuery = z.infer<typeof dashboardQuerySchema>;

@@ -7,7 +7,18 @@ import {
 } from "../schemas/dashboard.schema.js";
 import { obtenerMetricasDashboard } from "../services/dashboard.service.js";
 
-const dashboard = new OpenAPIHono();
+const dashboard = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          message: result.error.issues.map((issue) => issue.message).join("; "),
+        },
+        400,
+      );
+    }
+  },
+});
 
 const dashboardRoute = createRoute({
   method: "get",
@@ -15,7 +26,7 @@ const dashboardRoute = createRoute({
   tags: ["Dashboard"],
   summary: "Consultar métricas y resumen del dashboard",
   description:
-    "Provee métricas clave actualizadas del sistema: resumen de reservas del día, tasa de ocupación (instantánea y diaria) con desglose por categoría y cancelaciones recientes. Requiere rol de Administrador.",
+    "Conteo de reservas: diario con fecha=YYYY-MM-DD, mensual con anio y mes, anual con anio. Sin parámetros consulta el día actual. Los campos ajenos al período se rechazan. Incluye la ocupación instantánea de salas y notebooks por separado. Requiere rol ADMIN.",
   security: [{ Bearer: [] }],
   request: {
     query: dashboardQuerySchema,
