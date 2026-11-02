@@ -36,6 +36,10 @@ export const reservaDetalleSchema = z.object({
   fechaHoraInicio: z.string(),
   fechaHoraFin: z.string(),
   fechaLimiteCheckIn: z.string(),
+  fechaHoraConfirmacion: z.string().nullable().optional(),
+  fechaExpiracionHold: z.string().nullable().optional(),
+  confirmada: z.boolean().optional(),
+  esPendiente: z.boolean().optional(),
   fechaHoraCancelacion: z.string().nullable(),
   motivoCancelacion: z.string().nullable(),
   fechaHoraCheckIn: z.string().nullable().optional(),
@@ -67,7 +71,7 @@ export const listarReservasQuerySchema = z.object({
       example: 1,
     }),
   estado: z
-    .enum(["todas", "activas", "canceladas", "finalizadas"])
+    .enum(["todas", "activas", "canceladas", "finalizadas", "pendientes"])
     .optional()
     .openapi({
       param: {
@@ -75,7 +79,7 @@ export const listarReservasQuerySchema = z.object({
         in: "query",
       },
       description:
-        "Filtrar por estado de la reserva (activas, canceladas, finalizadas, todas)",
+        "Filtrar por estado de la reserva (activas, canceladas, finalizadas, pendientes, todas)",
       example: "activas",
     }),
 });
@@ -85,6 +89,25 @@ export const listarReservasResponseSchema = z.object({
 });
 
 export const cancelarReservaResponseSchema = z.object({
+  data: reservaDetalleSchema,
+});
+
+export const confirmarReservaParamsSchema = z.object({
+  id: z.coerce
+    .number()
+    .int()
+    .positive()
+    .openapi({
+      param: {
+        name: "id",
+        in: "path",
+      },
+      example: 1,
+      description: "ID de la reserva pendiente a confirmar",
+    }),
+});
+
+export const confirmarReservaResponseSchema = z.object({
   data: reservaDetalleSchema,
 });
 

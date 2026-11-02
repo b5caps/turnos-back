@@ -6,6 +6,7 @@ import { swaggerUI } from "@hono/swagger-ui";
 import recursosRoutes from "./routes/recursos.routes.js";
 import reservasRoutes from "./routes/reservas.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import { limpiarHoldsExpirados } from "./services/limpieza.service.js";
 
 const app = new OpenAPIHono();
 
@@ -31,6 +32,14 @@ app.doc("/doc", {
 });
 
 app.get("/docs", swaggerUI({ url: "/doc" }));
+
+// Intervalo de limpieza de reservas pendientes vencidas cada 60 segundos
+const INTERVALO_LIMPIEZA_MS = 60 * 1000;
+setInterval(() => {
+  limpiarHoldsExpirados().catch((err) => {
+    console.error("[Limpieza] Error al limpiar holds expirados:", err);
+  });
+}, INTERVALO_LIMPIEZA_MS);
 
 serve(
   {
