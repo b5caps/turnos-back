@@ -127,9 +127,31 @@ export const recursoDetalleSchema = z.object({
   }),
 });
 
+export const eventoBitacoraSchema = z.object({
+  accion: z.enum([
+    "CREACION",
+    "CONFIRMACION",
+    "EDICION",
+    "CANCELACION",
+    "FINALIZACION",
+  ]),
+  actorId: z.number().int(),
+  actorRol: z.enum(["ADMIN", "UTN", "EXTERNO"]),
+  fechaHora: z.string(),
+  detalle: z.string().nullable(),
+});
+
 export const reservaDetalleSchema = z.object({
   id: z.number().int().openapi({ example: 1 }),
   usuarioId: z.number().int().openapi({ example: 2 }),
+  creadoPorId: z.number().int().nullable().optional().openapi({ example: 2 }),
+  canceladoPorId: z.number().int().nullable().optional().openapi({ example: null }),
+  canceladoPorRol: z
+    .enum(["ADMIN", "UTN", "EXTERNO"])
+    .nullable()
+    .optional()
+    .openapi({ example: null }),
+  bitacora: z.array(eventoBitacoraSchema).optional(),
   usuario: z
     .object({
       id: z.number().int().openapi({ example: 2 }),
@@ -327,6 +349,12 @@ export const finalizarReservaBodySchema = z.object({
 
 export const finalizarReservaResponseSchema = z.object({
   data: reservaDetalleSchema,
+});
+
+export const liberarHoldResponseSchema = z.object({
+  message: z.string().openapi({
+    example: "Reserva pendiente (hold) liberada exitosamente",
+  }),
 });
 
 export type CancelarReservaInput = z.infer<typeof cancelarReservaBodySchema>;
