@@ -10,8 +10,9 @@ import {
   ConfiguracionBusinessError,
   obtenerConfiguracion,
 } from "../services/configuracion.service.js";
+import { validationHook } from "../lib/validation.js";
 
-const configuracion = new OpenAPIHono();
+const configuracion = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / - Consultar configuración global (ADMIN)
 const obtenerConfiguracionRoute = createRoute({
@@ -93,7 +94,7 @@ configuracion.openapi(obtenerConfiguracionRoute, async (c) => {
     );
   }
 
-  const data = await obtenerConfiguracion();
+  const data = await obtenerConfiguracion(true);
   return c.json({ data }, 200);
 });
 
@@ -108,7 +109,7 @@ configuracion.openapi(actualizarConfiguracionRoute, async (c) => {
     }
 
     const body = c.req.valid("json");
-    const data = await actualizarConfiguracion(body);
+    const data = await actualizarConfiguracion(body, usuarioAuth);
     return c.json({ data }, 200);
   } catch (error) {
     if (error instanceof ConfiguracionBusinessError) {

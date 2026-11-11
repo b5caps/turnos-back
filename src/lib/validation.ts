@@ -59,3 +59,18 @@ export const requireJsonBody: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+/**
+ * Valida que una cadena YYYY-MM-DD corresponda a una fecha real de calendario.
+ */
+export function esFechaRealValida(fechaStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaStr)) return false;
+  const [anio, mes, dia] = fechaStr.split("-").map(Number);
+  if (mes < 1 || mes > 12 || dia < 1 || dia > 31) return false;
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
+  return (
+    fecha.getUTCFullYear() === anio &&
+    fecha.getUTCMonth() === mes - 1 &&
+    fecha.getUTCDate() === dia
+  );
+}
+
