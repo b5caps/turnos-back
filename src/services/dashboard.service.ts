@@ -1,7 +1,5 @@
-import { PrismaClient } from "@prisma/client";
 import type { DashboardQuery } from "../schemas/dashboard.schema.js";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 export async function obtenerMetricasDashboard(query: DashboardQuery) {
   const ahora = new Date();

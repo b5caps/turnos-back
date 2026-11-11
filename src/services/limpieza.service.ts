@@ -1,7 +1,5 @@
-import { PrismaClient } from "@prisma/client";
 import { DURACION_HOLD_MINUTOS } from "./disponibilidad.service.js";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 /**
  * Limpia y elimina reservas pendientes cuyo Hold de 10 minutos haya expirado sin confirmación.

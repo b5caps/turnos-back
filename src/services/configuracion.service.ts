@@ -1,7 +1,5 @@
-import { PrismaClient } from "@prisma/client";
 import type { ActualizarConfiguracionInput } from "../schemas/configuracion.schema.js";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 const VALORES_POR_DEFECTO = {
   id: 1,
