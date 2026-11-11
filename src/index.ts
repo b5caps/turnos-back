@@ -10,8 +10,9 @@ import { limpiarHoldsExpirados } from "./services/limpieza.service.js";
 import espaciosRoutes from "./routes/espacios.routes.js";
 import configuracionRoutes from "./routes/configuracion.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
+import { validationHook } from "./lib/validation.js";
 
-const app = new OpenAPIHono();
+const app = new OpenAPIHono({ defaultHook: validationHook });
 
 app.use("/*", cors());
 app.get("/", (c) => {

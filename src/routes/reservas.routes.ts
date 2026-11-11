@@ -9,6 +9,7 @@ import {
   confirmarReserva,
   editarReserva,
   finalizarReserva,
+  liberarHold,
   listarReservas,
   resolverTitularReserva,
   ReservaBusinessError,
@@ -16,6 +17,10 @@ import {
   ReservaForbiddenError,
   ReservaNotFoundError,
 } from "../services/reservas.service.js";
+import {
+  obtenerAuditoriaReserva,
+  registrarEventoReserva,
+} from "../services/auditoria.service.js";
 import {
   cancelarReservaBodySchema,
   cancelarReservaParamsSchema,
@@ -29,6 +34,7 @@ import {
   finalizarReservaBodySchema,
   finalizarReservaParamsSchema,
   finalizarReservaResponseSchema,
+  liberarHoldResponseSchema,
   listarReservasQuerySchema,
   listarReservasResponseSchema,
   reservaParamsSchema,
@@ -36,13 +42,18 @@ import {
   unauthorizedResponse,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
+import { validationHook } from "../lib/validation.js";
 
-const reservas = new OpenAPIHono();
+const reservas = new OpenAPIHono({ defaultHook: validationHook });
 
 function mapearReserva(reserva: any) {
   return {
     id: reserva.id,
     usuarioId: reserva.usuarioId,
+    creadoPorId: reserva.creadoPorId ?? reserva.usuarioId,
+    canceladoPorId: reserva.canceladoPorId ?? null,
+    canceladoPorRol: reserva.canceladoPorRol ?? null,
+    bitacora: reserva.bitacora ?? [],
     usuario: reserva.usuario
       ? {
           id: reserva.usuario.id,
@@ -275,10 +286,23 @@ reservas.openapi(crearReservaRoute, async (c) => {
 
     // Si es una Reserva confirmada inmediatamente por ADMIN:
     if ("fechaHoraInicio" in resultado) {
+      await registrarEventoReserva({
+        reservaId: resultado.id,
+        accion: "CREACION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        fechaHora: resultado.fechaHoraConfirmacion ?? new Date(),
+      });
+      const auditoria = await obtenerAuditoriaReserva(
+        resultado.id,
+        resultado.usuarioId,
+      );
+
       return c.json(
         {
           data: mapearReserva({
             ...resultado,
+            ...auditoria,
             confirmada: true,
             esPendiente: false,
           }),
@@ -296,6 +320,10 @@ reservas.openapi(crearReservaRoute, async (c) => {
         data: {
           id: resultado.id,
           usuarioId: resultado.usuarioId,
+          creadoPorId: usuarioAuth.id,
+          canceladoPorId: null,
+          canceladoPorRol: null,
+          bitacora: [],
           usuario: undefined,
           fechaHoraInicio: resultado.fechaHoraDeseadaInicio.toISOString(),
           fechaHoraFin: resultado.fechaHoraDeseadaFin.toISOString(),
@@ -513,6 +541,53 @@ reservas.openapi(finalizarReservaRoute, async (c) => {
     }
     if (error instanceof ReservaBusinessError) {
       return c.json({ message: error.message }, 400);
+    }
+
+    throw error;
+  }
+});
+
+const liberarHoldRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Reservas"],
+  summary: "Liberar una reserva pendiente (Hold)",
+  description:
+    "Libera inmediatamente una reserva pendiente (hold de 10 minutos) que aún no fue confirmada, devolviendo el cupo a disponibilidad.",
+  security: [{ Bearer: [] }],
+  request: {
+    params: reservaParamsSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: liberarHoldResponseSchema },
+      },
+      description: "Reserva pendiente liberada exitosamente",
+    },
+    401: unauthorizedResponse,
+    403: errorResponse("No tienes permisos para liberar esta reserva pendiente"),
+    404: errorResponse("Reserva pendiente (hold) no encontrada"),
+  },
+});
+
+reservas.openapi(liberarHoldRoute, async (c) => {
+  try {
+    const { id } = c.req.valid("param");
+    const usuarioAuth = c.get("usuario");
+
+    await liberarHold(id, usuarioAuth);
+
+    return c.json(
+      { message: "Reserva pendiente (hold) liberada exitosamente" },
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
     }
 
     throw error;

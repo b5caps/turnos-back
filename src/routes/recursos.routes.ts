@@ -47,7 +47,7 @@ const bloqueDisponibilidadSchema = z.object({
   ocupacion: z.number(),
   disponible: z.boolean(),
   motivoNoDisponible: z
-    .enum(["fuera_de_horario", "bloqueado", "sin_cupos"])
+    .enum(["fuera_de_horario", "bloqueado", "sin_cupos", "en_gestion"])
     .nullable(),
 });
 
