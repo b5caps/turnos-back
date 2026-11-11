@@ -792,50 +792,65 @@ export async function obtenerAsignacionesNotebooks(
     momentoRef = new Date(año, mes - 1, dia, 12, 0, 0);
   }
 
-  const asignacionesPromises = notebooks.map(async (nb) => {
-    // Buscar si posee una reserva activa que cubra momentoRef
-    const asignacion = await prisma.reservaRecurso.findFirst({
-      where: {
-        recursoId: nb.id,
-        reserva: {
-          fechaHoraCancelacion: null,
-          fechaHoraInicio: { lte: momentoRef },
-          fechaHoraFin: { gte: momentoRef },
-          OR: [
-            { fechaHoraCheckOut: null },
-            { fechaHoraCheckOut: { gt: momentoRef } },
-          ],
-        },
-      },
-      include: {
-        reserva: {
+  const notebookIds = notebooks.map((nb) => nb.id);
+  const asignacionesDb =
+    notebookIds.length > 0
+      ? await prisma.reservaRecurso.findMany({
+          where: {
+            recursoId: { in: notebookIds },
+            reserva: {
+              fechaHoraCancelacion: null,
+              fechaHoraInicio: { lte: momentoRef },
+              fechaHoraFin: { gte: momentoRef },
+              OR: [
+                { fechaHoraCheckOut: null },
+                { fechaHoraCheckOut: { gt: momentoRef } },
+              ],
+            },
+          },
           include: {
-            usuario: {
-              select: {
-                id: true,
-                nombre: true,
-                apellido: true,
-                email: true,
-                perfilUTN: {
+            reserva: {
+              include: {
+                usuario: {
                   select: {
-                    legajo: true,
+                    id: true,
+                    nombre: true,
+                    apellido: true,
+                    email: true,
+                    perfilUTN: {
+                      select: {
+                        legajo: true,
+                      },
+                    },
                   },
                 },
-              },
-            },
-            recursos: {
-              include: {
-                recurso: {
+                recursos: {
                   include: {
-                    sala: true,
+                    recurso: {
+                      include: {
+                        sala: true,
+                      },
+                    },
                   },
                 },
               },
             },
           },
-        },
-      },
-    });
+        })
+      : [];
+
+  const asignacionPorNotebook = new Map<
+    number,
+    (typeof asignacionesDb)[number]
+  >();
+  for (const a of asignacionesDb) {
+    if (!asignacionPorNotebook.has(a.recursoId)) {
+      asignacionPorNotebook.set(a.recursoId, a);
+    }
+  }
+
+  return notebooks.map((nb) => {
+    const asignacion = asignacionPorNotebook.get(nb.id) ?? null;
 
     const espacioReserva = asignacion?.reserva.recursos.find(
       (r) => r.recurso.sala !== null,
@@ -876,6 +891,4 @@ export async function obtenerAsignacionesNotebooks(
         : null,
     };
   });
-
-  return Promise.all(asignacionesPromises);
 }

@@ -6,6 +6,14 @@ export const errorSchema = z.object({
   }),
 });
 
+export const cambioConfiguracionSchema = z.object({
+  accion: z.enum(["CREACION", "ACTUALIZACION", "DESACTIVACION", "ELIMINACION"]),
+  actorId: z.number().int(),
+  actorRol: z.enum(["ADMIN", "UTN", "EXTERNO"]),
+  fechaHora: z.string(),
+  detalle: z.string().nullable(),
+});
+
 export const configuracionResponseSchema = z.object({
   data: z.object({
     id: z.number().int().openapi({ example: 1 }),
@@ -32,6 +40,8 @@ export const configuracionResponseSchema = z.object({
     actualizadoEn: z.string().openapi({
       example: "2026-10-20T20:00:00.000Z",
     }),
+    actualizadoPorId: z.number().int().nullable().optional(),
+    historialCambios: z.array(cambioConfiguracionSchema).optional(),
   }),
 });
 

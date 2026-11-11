@@ -6,8 +6,9 @@ import {
   errorSchema,
 } from "../schemas/dashboard.schema.js";
 import { obtenerMetricasDashboard } from "../services/dashboard.service.js";
+import { validationHook } from "../lib/validation.js";
 
-const dashboard = new OpenAPIHono();
+const dashboard = new OpenAPIHono({ defaultHook: validationHook });
 
 const dashboardRoute = createRoute({
   method: "get",

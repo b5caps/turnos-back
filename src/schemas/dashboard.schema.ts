@@ -1,17 +1,14 @@
 import { z } from "@hono/zod-openapi";
+import { esFechaRealValida } from "../lib/validation.js";
 
-export const errorSchema = z.object({
-  message: z.string().openapi({
-    example: "Acceso denegado: se requieren permisos de administrador",
-  }),
-});
+const fechaParamSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "El formato de fecha debe ser YYYY-MM-DD")
+  .refine(esFechaRealValida, "La fecha ingresada no es una fecha de calendario válida");
 
-export const dashboardQuerySchema = z.object({
-  fecha: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "El formato de fecha debe ser YYYY-MM-DD")
-    .optional()
-    .openapi({
+export const dashboardQuerySchema = z
+  .object({
+    fecha: fechaParamSchema.optional().openapi({
       param: {
         name: "fecha",
         in: "query",
@@ -20,22 +17,48 @@ export const dashboardQuerySchema = z.object({
       description:
         "Fecha a consultar (formato YYYY-MM-DD). Por defecto la fecha actual del servidor.",
     }),
-  limiteCancelaciones: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(20)
-    .optional()
-    .default(5)
-    .openapi({
+    desde: fechaParamSchema.optional().openapi({
       param: {
-        name: "limiteCancelaciones",
+        name: "desde",
         in: "query",
       },
-      example: 5,
-      description:
-        "Cantidad máxima de cancelaciones recientes a retornar (entre 1 y 20, por defecto 5)",
+      example: "2026-11-01",
+      description: "Fecha de inicio del rango a consultar (YYYY-MM-DD)",
     }),
+    hasta: fechaParamSchema.optional().openapi({
+      param: {
+        name: "hasta",
+        in: "query",
+      },
+      example: "2026-11-30",
+      description: "Fecha de fin del rango a consultar (YYYY-MM-DD)",
+    }),
+    limiteCancelaciones: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .default(5)
+      .openapi({
+        param: {
+          name: "limiteCancelaciones",
+          in: "query",
+        },
+        example: 5,
+        description:
+          "Cantidad máxima de cancelaciones recientes a retornar (entre 1 y 20, por defecto 5)",
+      }),
+  })
+  .refine((q) => !(q.desde && q.hasta && q.desde > q.hasta), {
+    message: "La fecha 'desde' no puede ser posterior a 'hasta'",
+    path: ["desde"],
+  });
+
+export const errorSchema = z.object({
+  message: z.string().openapi({
+    example: "Acceso denegado: se requieren permisos de administrador",
+  }),
 });
 
 export const categoriaOcupacionSchema = z.object({
@@ -53,6 +76,17 @@ export const ocupacionActualSchema = z.object({
     salas: categoriaOcupacionSchema,
     notebooks: categoriaOcupacionSchema,
   }),
+});
+
+export const ocupacionEspacioSchema = z.object({
+  id: z.number().int().openapi({ example: 1 }),
+  nombre: z.string().openapi({ example: "Sala Magna" }),
+  ubicacion: z.string().openapi({ example: "Pabellón Central" }),
+  capacidad: z.number().int().openapi({ example: 40 }),
+  cantidadReservas: z.number().int().openapi({ example: 5 }),
+  horasReservadas: z.number().openapi({ example: 8.5 }),
+  porcentajeOcupacion: z.number().openapi({ example: 60.7 }),
+  ocupadoActualmente: z.boolean().openapi({ example: true }),
 });
 
 export const reservasDelDiaSchema = z.object({
@@ -91,13 +125,16 @@ export const cancelacionRecienteSchema = z.object({
 export const dashboardResponseSchema = z.object({
   data: z.object({
     fecha: z.string().openapi({ example: "2026-10-20" }),
+    desde: z.string().optional().openapi({ example: "2026-11-01" }),
+    hasta: z.string().optional().openapi({ example: "2026-11-30" }),
     reservasDelDia: reservasDelDiaSchema,
     ocupacionActual: ocupacionActualSchema,
     tasaOcupacionDia: z.number().openapi({
       example: 42.5,
       description:
-        "Porcentaje de horas-recurso reservadas en el día respecto a la capacidad de apertura",
+        "Porcentaje de horas-recurso reservadas en el período respecto a la capacidad de apertura",
     }),
+    ocupacionPorEspacio: z.array(ocupacionEspacioSchema),
     cancelacionesRecientes: z.array(cancelacionRecienteSchema),
   }),
 });
