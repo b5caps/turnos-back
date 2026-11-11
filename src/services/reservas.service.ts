@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type {
   CancelarReservaInput,
   EditarReservaInput,
@@ -11,8 +11,7 @@ import {
   calcularFechaLimiteCheckIn,
   DURACION_HOLD_MINUTOS,
 } from "./disponibilidad.service.js";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 export class ReservaNotFoundError extends Error {}
 export class ReservaConflictError extends Error {}
@@ -36,7 +35,11 @@ const includeRecursosCompletos = {
       nombre: true,
       apellido: true,
       email: true,
-      legajo: true,
+      perfilUTN: {
+        select: {
+          legajo: true,
+        },
+      },
     },
   },
 };
@@ -95,7 +98,11 @@ export async function listarReservas(
             nombre: true,
             apellido: true,
             email: true,
-            legajo: true,
+            perfilUTN: {
+              select: {
+                legajo: true,
+              },
+            },
           },
         },
       },
@@ -314,7 +321,7 @@ export async function editarReserva(
       data: dataUpdate,
       include: includeRecursosCompletos,
     });
-  });
+  }, { maxWait: 10000, timeout: 15000 });
 }
 
 export async function cancelarReserva(
@@ -324,7 +331,6 @@ export async function cancelarReserva(
 ) {
   const reserva = await prisma.reserva.findUnique({
     where: { id },
-    include: includeRecursosCompletos,
   });
 
   if (!reserva) {
@@ -354,12 +360,24 @@ export async function cancelarReserva(
     );
   }
 
-  return prisma.reserva.update({
-    where: { id },
+  const resultado = await prisma.reserva.updateMany({
+    where: {
+      id,
+      fechaHoraCancelacion: null,
+      fechaHoraCheckIn: null,
+    },
     data: {
       fechaHoraCancelacion: ahora,
       motivoCancelacion: input?.motivoCancelacion?.trim() || null,
     },
+  });
+
+  if (resultado.count === 0) {
+    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+  }
+
+  return prisma.reserva.findUniqueOrThrow({
+    where: { id },
     include: includeRecursosCompletos,
   });
 }
@@ -404,8 +422,13 @@ export async function finalizarReserva(
     );
   }
 
-  return prisma.reserva.update({
-    where: { id },
+  const resultado = await prisma.reserva.updateMany({
+    where: {
+      id,
+      fechaHoraCancelacion: null,
+      fechaHoraCheckOut: null,
+      fechaHoraCheckIn: { not: null },
+    },
     data: {
       fechaHoraCheckOut: ahora,
       fechaHoraFin: ahora,
@@ -413,6 +436,16 @@ export async function finalizarReserva(
         ? { observacion: input.observacion.trim() }
         : {}),
     },
+  });
+
+  if (resultado.count === 0) {
+    throw new ReservaConflictError(
+      "La reserva ya se encuentra finalizada o cancelada",
+    );
+  }
+
+  return prisma.reserva.findUniqueOrThrow({
+    where: { id },
     include: includeRecursosCompletos,
   });
 }
@@ -497,7 +530,7 @@ export async function confirmarReserva(
     });
 
     return reservaConfirmada;
-  });
+  }, { maxWait: 10000, timeout: 15000 });
 }
 
 export async function obtenerAsignacionesNotebooks(
@@ -552,7 +585,11 @@ export async function obtenerAsignacionesNotebooks(
                 nombre: true,
                 apellido: true,
                 email: true,
-                legajo: true,
+                perfilUTN: {
+                  select: {
+                    legajo: true,
+                  },
+                },
               },
             },
             recursos: {
@@ -602,7 +639,7 @@ export async function obtenerAsignacionesNotebooks(
               nombre: asignacion.reserva.usuario.nombre,
               apellido: asignacion.reserva.usuario.apellido,
               email: asignacion.reserva.usuario.email,
-              legajo: (asignacion.reserva.usuario as any).legajo ?? null,
+              legajo: asignacion.reserva.usuario.perfilUTN?.legajo ?? null,
             },
           }
         : null,

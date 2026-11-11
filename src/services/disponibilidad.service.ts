@@ -1,8 +1,10 @@
-import { PrismaClient, Prisma } from "@prisma/client";
-import { ReservaConflictError } from "./reservas.service.js";
+import { Prisma } from "@prisma/client";
+import {
+  ReservaConflictError,
+  ReservaNotFoundError,
+} from "./reservas.service.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 export const DURACION_HOLD_MINUTOS = 10;
 
@@ -391,6 +393,9 @@ export async function crearReserva(input: CrearReservaInput) {
     }
   } else if (input.recursoIds && input.recursoIds.length > 0) {
     ids.push(...input.recursoIds);
+    if (input.notebookId) {
+      ids.push(input.notebookId);
+    }
   }
 
   const recursoIds: number[] = [...new Set(ids)].sort((a, b) => a - b);
@@ -409,8 +414,26 @@ export async function crearReserva(input: CrearReservaInput) {
     },
   });
 
+  if (input.notebookId !== undefined && input.notebookId !== null) {
+    const recursoNotebook = recursosDb.find((r) => r.id === input.notebookId);
+    if (!recursoNotebook || !recursoNotebook.notebook) {
+      throw new ReservaNotFoundError(
+        "La notebook especificada no existe o no es un dispositivo válido",
+      );
+    }
+  }
+
   if (recursosDb.length !== recursoIds.length) {
     throw new DisponibilidadError("Uno o más recursos no existen");
+  }
+
+  if (input.espacioId !== undefined) {
+    const recursoEspacio = recursosDb.find((r) => r.id === input.espacioId);
+    if (!recursoEspacio || !recursoEspacio.sala) {
+      throw new DisponibilidadError(
+        "El espacio especificado no existe o no es una sala válida",
+      );
+    }
   }
 
   for (const r of recursosDb) {
@@ -427,6 +450,12 @@ export async function crearReserva(input: CrearReservaInput) {
   if (salas.length === 0) {
     throw new DisponibilidadError(
       "La reserva debe incluir obligatoriamente al menos un espacio físico (sala)",
+    );
+  }
+
+  if (salas.length > 1) {
+    throw new DisponibilidadError(
+      "Solo se permite reservar un espacio físico (sala) por reserva",
     );
   }
 
@@ -465,115 +494,155 @@ export async function crearReserva(input: CrearReservaInput) {
     );
   }
 
-  return prisma.$transaction(async (tx) => {
-    // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
-    await tx.$queryRaw`
-      SELECT id FROM "Recurso"
-      WHERE id IN (${Prisma.join(recursoIds)})
-      FOR UPDATE
-    `;
+  return prisma.$transaction(
+    async (tx) => {
+      // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
+      await tx.$queryRaw`
+        SELECT id FROM "Recurso"
+        WHERE id IN (${Prisma.join(recursoIds)})
+        FOR UPDATE
+      `;
 
-    // 2. Obtener recursos con sus bloqueos, reservas y reservas pendientes activas
-    const diaSemana = inicio.getDay();
-    const recursos = await tx.recurso.findMany({
-      where: {
-        id: { in: recursoIds },
-      },
-      include: {
-        disponibilidades: {
-          where: { diaSemana },
+      // 2. Obtener recursos con sus disponibilidades y conteos de bloqueos, reservas y holds activos
+      const diaSemana = inicio.getDay();
+      const recursos = await tx.recurso.findMany({
+        where: {
+          id: { in: recursoIds },
         },
-        bloqueos: {
-          where: {
-            OR: [
-              {
-                fechaHoraInicio: { lt: fin },
-                fechaHoraFin: { gt: inicio },
+        select: {
+          id: true,
+          nombre: true,
+          capacidad: true,
+          disponibilidades: {
+            where: { diaSemana },
+          },
+          _count: {
+            select: {
+              bloqueos: {
+                where: {
+                  OR: [
+                    {
+                      fechaHoraInicio: { lt: fin },
+                      fechaHoraFin: { gt: inicio },
+                    },
+                    {
+                      fechaHoraInicio: { lt: fin },
+                      fechaHoraFin: null,
+                    },
+                  ],
+                },
               },
-              {
-                fechaHoraInicio: { lt: fin },
-                fechaHoraFin: null,
+              reservas: {
+                where: {
+                  reserva: {
+                    fechaHoraCancelacion: null,
+                    fechaHoraInicio: { lt: fin },
+                    fechaHoraFin: { gt: inicio },
+                  },
+                },
               },
-            ],
+              reservasPendientes: {
+                where: {
+                  reservaPendiente: {
+                    fechaHoraSolicitud: { gt: limiteHold },
+                    fechaHoraDeseadaInicio: { lt: fin },
+                    fechaHoraDeseadaFin: { gt: inicio },
+                  },
+                },
+              },
+            },
           },
         },
-        reservas: {
-          where: {
-            reserva: {
-              fechaHoraCancelacion: null,
-              fechaHoraInicio: { lt: fin },
-              fechaHoraFin: { gt: inicio },
+      });
+
+      if (recursos.length !== recursoIds.length) {
+        throw new DisponibilidadError("Uno o más recursos no existen");
+      }
+
+      const minutosInicioReq = inicio.getHours() * 60 + inicio.getMinutes();
+      const minutosFinReq = fin.getHours() * 60 + fin.getMinutes();
+
+      for (const recurso of recursos) {
+        // Validar horario del recurso para ese día
+        const dentroDeHorario =
+          recurso.disponibilidades.length === 0 ||
+          recurso.disponibilidades.some(
+            (disp) =>
+              minutosInicioReq >= disp.minutosInicio &&
+              minutosFinReq <= disp.minutosFin,
+          );
+
+        if (!dentroDeHorario) {
+          throw new DisponibilidadError(
+            `El recurso ${recurso.nombre} no está disponible fuera de su horario establecido`,
+          );
+        }
+
+        // Validar si tiene bloqueos administrativos
+        if (recurso._count.bloqueos > 0) {
+          throw new ReservaConflictError(
+            `El recurso ${recurso.nombre} se encuentra bloqueado por administración en el horario solicitado`,
+          );
+        }
+
+        // Validar capacidad disponible considerando reservas confirmadas y reservas pendientes (holds)
+        const ocupacion =
+          recurso._count.reservas + recurso._count.reservasPendientes;
+        if (ocupacion >= recurso.capacidad) {
+          throw new ReservaConflictError(
+            `El recurso ${recurso.nombre} se encuentra temporalmente apartado o reservado por otro usuario en ese horario`,
+          );
+        }
+      }
+
+      // 3. Si es ADMIN y solicitó confirmación inmediata: Crear directamente la Reserva
+      if (input.confirmarInmediato) {
+        return tx.reserva.create({
+          data: {
+            usuarioId: input.usuarioId,
+            fechaHoraInicio: inicio,
+            fechaHoraFin: fin,
+            fechaLimiteCheckIn,
+            fechaHoraConfirmacion: ahora,
+            observacion: input.observacion,
+            recursos: {
+              create: recursoIds.map((recursoId: number) => ({ recursoId })),
             },
           },
           include: {
-            reserva: true,
-          },
-        },
-        reservasPendientes: {
-          where: {
-            reservaPendiente: {
-              fechaHoraSolicitud: { gt: limiteHold },
-              fechaHoraDeseadaInicio: { lt: fin },
-              fechaHoraDeseadaFin: { gt: inicio },
+            recursos: {
+              include: {
+                recurso: {
+                  include: {
+                    sala: true,
+                    notebook: true,
+                  },
+                },
+              },
+            },
+            usuario: {
+              select: {
+                id: true,
+                nombre: true,
+                apellido: true,
+                email: true,
+                perfilUTN: {
+                  select: {
+                    legajo: true,
+                  },
+                },
+              },
             },
           },
-          include: {
-            reservaPendiente: true,
-          },
-        },
-      },
-    });
-
-    if (recursos.length !== recursoIds.length) {
-      throw new DisponibilidadError("Uno o más recursos no existen");
-    }
-
-    const minutosInicioReq = inicio.getHours() * 60 + inicio.getMinutes();
-    const minutosFinReq = fin.getHours() * 60 + fin.getMinutes();
-
-    for (const recurso of recursos) {
-      // Validar horario del recurso para ese día
-      const dentroDeHorario =
-        recurso.disponibilidades.length === 0 ||
-        recurso.disponibilidades.some(
-          (disp) =>
-            minutosInicioReq >= disp.minutosInicio &&
-            minutosFinReq <= disp.minutosFin,
-        );
-
-      if (!dentroDeHorario) {
-        throw new DisponibilidadError(
-          `El recurso ${recurso.nombre} no está disponible fuera de su horario establecido`,
-        );
+        });
       }
 
-      // Validar si tiene bloqueos administrativos
-      if (recurso.bloqueos.length > 0) {
-        throw new ReservaConflictError(
-          `El recurso ${recurso.nombre} se encuentra bloqueado por administración en el horario solicitado`,
-        );
-      }
-
-      // Validar capacidad disponible considerando reservas confirmadas y reservas pendientes (holds)
-      const ocupacion =
-        recurso.reservas.length + recurso.reservasPendientes.length;
-      if (ocupacion >= recurso.capacidad) {
-        throw new ReservaConflictError(
-          `El recurso ${recurso.nombre} se encuentra temporalmente apartado o reservado por otro usuario en ese horario`,
-        );
-      }
-    }
-
-    // 3. Si es ADMIN y solicitó confirmación inmediata: Crear directamente la Reserva
-    if (input.confirmarInmediato) {
-      return tx.reserva.create({
+      // 4. Usuario común (o admin sin confirmación inmediata): Crear ReservaPendiente (Hold de 10 min)
+      return tx.reservaPendiente.create({
         data: {
           usuarioId: input.usuarioId,
-          fechaHoraInicio: inicio,
-          fechaHoraFin: fin,
-          fechaLimiteCheckIn,
-          fechaHoraConfirmacion: ahora,
-          observacion: input.observacion,
+          fechaHoraDeseadaInicio: inicio,
+          fechaHoraDeseadaFin: fin,
           recursos: {
             create: recursoIds.map((recursoId: number) => ({ recursoId })),
           },
@@ -589,41 +658,12 @@ export async function crearReserva(input: CrearReservaInput) {
               },
             },
           },
-          usuario: {
-            select: {
-              id: true,
-              nombre: true,
-              apellido: true,
-              email: true,
-              legajo: true,
-            },
-          },
         },
       });
-    }
-
-    // 4. Usuario común (o admin sin confirmación inmediata): Crear ReservaPendiente (Hold de 10 min)
-    return tx.reservaPendiente.create({
-      data: {
-        usuarioId: input.usuarioId,
-        fechaHoraDeseadaInicio: inicio,
-        fechaHoraDeseadaFin: fin,
-        recursos: {
-          create: recursoIds.map((recursoId: number) => ({ recursoId })),
-        },
-      },
-      include: {
-        recursos: {
-          include: {
-            recurso: {
-              include: {
-                sala: true,
-                notebook: true,
-              },
-            },
-          },
-        },
-      },
-    });
-  });
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    },
+  );
 }

@@ -49,7 +49,10 @@ function mapearReserva(reserva: any) {
           nombre: reserva.usuario.nombre,
           apellido: reserva.usuario.apellido,
           email: reserva.usuario.email,
-          legajo: reserva.usuario.legajo ?? null,
+          legajo:
+            reserva.usuario.perfilUTN?.legajo ??
+            reserva.usuario.legajo ??
+            null,
         }
       : undefined,
     fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
