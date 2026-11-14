@@ -8,6 +8,7 @@ model Recurso {
   activo             Boolean                   @default(true)
   disponibilidades   Disponibilidad[]
   bloqueos           Bloqueo[]
+  codigosQr          QrEspacio[]
   reservas           ReservaRecurso[]
   reservasPendientes ReservaPendienteRecurso[]
   sala               Sala?
@@ -60,6 +61,17 @@ model ReservaRecurso {
   recurso   Recurso @relation(fields: [recursoId], references: [id])
 
   @@id([reservaId, recursoId])
+}
+
+model QrEspacio {
+  id              Int       @id @default(autoincrement())
+  recursoId       Int
+  recurso         Recurso   @relation(fields: [recursoId], references: [id], onDelete: Cascade)
+  tokenHash       String    @unique
+  fechaCreacion   DateTime  @default(now())
+  fechaRevocacion DateTime?
+
+  @@index([recursoId, fechaRevocacion])
 }
 
 model ReservaPendienteRecurso {

@@ -1,6 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
+import { bloquearReserva } from "../lib/reservas-lock.js";
+import { obtenerConfiguracion } from "./configuracion.service.js";
+import { reloj } from "../lib/reloj.js";
 import type {
   CancelarReservaInput,
   EditarReservaInput,
@@ -55,7 +58,7 @@ export async function listarReservas(
     where.usuarioId = usuarioAuth.id;
   }
 
-  const ahora = new Date();
+  const ahora = reloj.ahora();
 
   if (filtros.estado === "pendientes") {
     const limiteExpiracion = new Date(
@@ -128,6 +131,8 @@ export async function listarReservas(
     where.fechaHoraFin = { gt: ahora };
   } else if (filtros.estado === "canceladas") {
     where.fechaHoraCancelacion = { not: null };
+  } else if (filtros.estado === "liberadas_por_ausencia") {
+    where.tipoCancelacion = "AUSENCIA";
   } else if (filtros.estado === "finalizadas") {
     where.fechaHoraCancelacion = null;
     where.fechaHoraFin = { lte: ahora };
@@ -183,41 +188,42 @@ export async function editarReserva(
   input: EditarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-    include: includeRecursosCompletos,
-  });
-
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
-
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para modificar esta reserva",
-    );
-  }
-
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError(
-      "No se puede modificar una reserva que se encuentra cancelada",
-    );
-  }
-
-  if (reserva.fechaHoraCheckIn !== null) {
-    throw new ReservaBusinessError(
-      "No se puede modificar una reserva que ya realizó check-in",
-    );
-  }
-
-  const ahora = new Date();
-  if (reserva.fechaHoraFin <= ahora) {
-    throw new ReservaBusinessError(
-      "No se puede modificar una reserva que ya ha finalizado",
-    );
-  }
-
   return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id, input.notebookId ? [input.notebookId] : []);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
+
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
+
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para modificar esta reserva",
+      );
+    }
+
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError(
+        "No se puede modificar una reserva que se encuentra cancelada",
+      );
+    }
+
+    if (reserva.fechaHoraCheckIn !== null) {
+      throw new ReservaBusinessError(
+        "No se puede modificar una reserva que ya realizó check-in",
+      );
+    }
+
+    const ahora = reloj.ahora();
+    if (reserva.fechaHoraFin <= ahora) {
+      throw new ReservaBusinessError(
+        "No se puede modificar una reserva que ya ha finalizado",
+      );
+    }
+
     // Si se especifica notebookId (número o null para desvincular)
     if (input.notebookId !== undefined) {
       const notebookActual = reserva.recursos.find(
@@ -322,45 +328,50 @@ export async function cancelarReserva(
   input: CancelarReservaInput | undefined,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-    include: includeRecursosCompletos,
-  });
+  return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
 
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
 
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para cancelar esta reserva",
-    );
-  }
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para cancelar esta reserva",
+      );
+    }
 
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-  }
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
 
-  if (reserva.fechaHoraCheckIn !== null) {
-    throw new ReservaBusinessError(
-      "No se puede cancelar una reserva que ya realizó check-in",
-    );
-  }
+    if (reserva.fechaHoraCheckIn !== null) {
+      throw new ReservaBusinessError(
+        "No se puede cancelar una reserva que ya realizó check-in",
+      );
+    }
 
-  const ahora = new Date();
-  if (reserva.fechaHoraFin <= ahora) {
-    throw new ReservaBusinessError(
-      "No se puede cancelar una reserva cuya fecha de fin ya ha transcurrido",
-    );
-  }
+    const ahora = reloj.ahora();
+    if (reserva.fechaHoraFin <= ahora) {
+      throw new ReservaBusinessError(
+        "No se puede cancelar una reserva cuya fecha de fin ya ha transcurrido",
+      );
+    }
 
-  return prisma.reserva.update({
-    where: { id },
-    data: {
-      fechaHoraCancelacion: ahora,
-      motivoCancelacion: input?.motivoCancelacion?.trim() || null,
-    },
-    include: includeRecursosCompletos,
+    return tx.reserva.update({
+      where: { id },
+      data: {
+        fechaHoraCancelacion: ahora,
+        motivoCancelacion: input?.motivoCancelacion?.trim() || null,
+        tipoCancelacion:
+          usuarioAuth.rol === "ADMIN" ? "ADMINISTRADOR" : "USUARIO",
+      },
+      include: includeRecursosCompletos,
+    });
   });
 }
 
@@ -369,51 +380,54 @@ export async function finalizarReserva(
   input: FinalizarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-  });
+  return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+    });
 
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
 
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para finalizar esta reserva",
-    );
-  }
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para finalizar esta reserva",
+      );
+    }
 
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-  }
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
 
-  if (reserva.fechaHoraCheckOut !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra finalizada");
-  }
+    if (reserva.fechaHoraCheckOut !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra finalizada");
+    }
 
-  if (reserva.fechaHoraCheckIn === null) {
-    throw new ReservaBusinessError(
-      "No se puede finalizar una reserva que no ha realizado check-in",
-    );
-  }
+    if (reserva.fechaHoraCheckIn === null) {
+      throw new ReservaBusinessError(
+        "No se puede finalizar una reserva que no ha realizado check-in",
+      );
+    }
 
-  const ahora = new Date();
-  if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
-    throw new ReservaBusinessError(
-      "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
-    );
-  }
+    const ahora = reloj.ahora();
+    if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
+      throw new ReservaBusinessError(
+        "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
+      );
+    }
 
-  return prisma.reserva.update({
-    where: { id },
-    data: {
-      fechaHoraCheckOut: ahora,
-      fechaHoraFin: ahora,
-      ...(input?.observacion?.trim()
-        ? { observacion: input.observacion.trim() }
-        : {}),
-    },
-    include: includeRecursosCompletos,
+    return tx.reserva.update({
+      where: { id },
+      data: {
+        fechaHoraCheckOut: ahora,
+        fechaHoraFin: ahora,
+        ...(input?.observacion?.trim()
+          ? { observacion: input.observacion.trim() }
+          : {}),
+      },
+      include: includeRecursosCompletos,
+    });
   });
 }
 
@@ -421,6 +435,7 @@ export async function confirmarReserva(
   reservaPendienteId: number,
   usuarioAuth: TokenPayload,
 ) {
+  const config = await obtenerConfiguracion();
   return prisma.$transaction(async (tx) => {
     const referencia = await tx.reservaPendiente.findUnique({
       where: { id: reservaPendienteId },
@@ -455,7 +470,7 @@ export async function confirmarReserva(
       );
     }
 
-    const ahora = new Date();
+    const ahora = reloj.ahora();
     const expiracion = new Date(
       pendiente.fechaHoraSolicitud.getTime() +
         DURACION_HOLD_MINUTOS * 60 * 1000,
@@ -475,7 +490,13 @@ export async function confirmarReserva(
     const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
       pendiente.fechaHoraDeseadaInicio,
       pendiente.fechaHoraDeseadaFin,
+      config.minutosGraciaCheckIn,
     );
+    if (reloj.ahora() >= fechaLimiteCheckIn) {
+      throw new ReservaConflictError(
+        "El plazo de asistencia de la reserva ya venció",
+      );
+    }
 
     const bloqueo = await tx.bloqueo.findFirst({
       where: {

@@ -11,7 +11,8 @@ export const configuracionResponseSchema = z.object({
     id: z.number().int().openapi({ example: 1 }),
     minutosApertura: z.number().int().openapi({
       example: 480,
-      description: "Minutos desde la medianoche para apertura (ej. 480 = 08:00)",
+      description:
+        "Minutos desde la medianoche para apertura (ej. 480 = 08:00)",
     }),
     minutosCierre: z.number().int().openapi({
       example: 1320,
@@ -29,6 +30,14 @@ export const configuracionResponseSchema = z.object({
       example: 240,
       description: "Duración máxima permitida para un turno (minutos)",
     }),
+    minutosGraciaCheckIn: z
+      .number()
+      .int()
+      .openapi({
+        example: 15,
+        description:
+          "Tolerancia de llegada, entre 1 y 120 minutos; aplica a nuevas confirmaciones",
+      }),
     actualizadoEn: z.string().openapi({
       example: "2026-10-20T20:00:00.000Z",
     }),
@@ -70,6 +79,13 @@ export const actualizarConfiguracionSchema = z
       .min(15, "La duración máxima debe ser al menos 15 minutos")
       .optional()
       .openapi({ example: 240 }),
+    minutosGraciaCheckIn: z
+      .number()
+      .int()
+      .min(1)
+      .max(120)
+      .optional()
+      .openapi({ example: 15 }),
   })
   .refine(
     (data) => {

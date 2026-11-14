@@ -24,6 +24,7 @@ model Usuario {
   reservas           Reserva[]
   reservasPendientes ReservaPendiente[]
   bloqueosCreados     Bloqueo[]
+  checkInsRegistrados Reserva[] @relation("CheckInRegistradoPor")
 
   @@unique([tipoDocumento, documento])
   @@unique([email])

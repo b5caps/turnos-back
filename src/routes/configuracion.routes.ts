@@ -18,9 +18,10 @@ const obtenerConfiguracionRoute = createRoute({
   method: "get",
   path: "/",
   tags: ["Configuración"],
-  summary: "Consultar parámetros globales del establecimiento (Solo Administrador)",
+  summary:
+    "Consultar parámetros globales del establecimiento (Solo Administrador)",
   description:
-    "Obtiene los parámetros institucionales vigentes: horarios de apertura/cierre, tiempo máximo de antelación y duraciones de reserva.",
+    "Obtiene horarios, antelación, duraciones de reserva y minutosGraciaCheckIn (1 a 120 minutos).",
   security: [{ Bearer: [] }],
   responses: {
     200: {
@@ -47,9 +48,10 @@ const actualizarConfiguracionRoute = createRoute({
   method: "patch",
   path: "/",
   tags: ["Configuración"],
-  summary: "Actualizar parámetros globales del establecimiento (Solo Administrador)",
+  summary:
+    "Actualizar parámetros globales del establecimiento (Solo Administrador)",
   description:
-    "Modifica los parámetros de configuración global del sistema y aplica los cambios en tiempo real.",
+    "Modifica la configuración global. La gracia de check-in nueva aplica a futuras confirmaciones; los límites ya guardados se conservan.",
   security: [{ Bearer: [] }],
   request: {
     body: {

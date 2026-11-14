@@ -9,6 +9,8 @@ import {
 } from "../lib/horarios.js";
 import { ReservaConflictError } from "./reservas.service.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
+import { liberarAusenciasDeRecursos } from "./ausencias.service.js";
+import { reloj } from "../lib/reloj.js";
 
 export const DURACION_HOLD_MINUTOS = 10;
 
@@ -32,7 +34,6 @@ export type CrearReservaInput = {
   recursoIds?: number[];
   fechaHoraInicio: string;
   fechaHoraFin: string;
-  fechaLimiteCheckIn?: string;
   observacion?: string;
   confirmarInmediato?: boolean;
 };
@@ -103,12 +104,12 @@ export async function consultarDisponibilidadNotebooks(
 }
 
 const DURACION_BLOQUE_MIN = 15; // 15 minutos
-export const MINUTOS_TOLERANCIA_CHECK_IN = 15; // 15 minutos de tolerancia para check-in
-
-export function calcularFechaLimiteCheckIn(inicio: Date, fin: Date): Date {
-  const limite = new Date(
-    inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
-  );
+export function calcularFechaLimiteCheckIn(
+  inicio: Date,
+  fin: Date,
+  minutosGracia = 15,
+): Date {
+  const limite = new Date(inicio.getTime() + minutosGracia * 60 * 1000);
   return limite > fin ? new Date(fin.getTime()) : limite;
 }
 
@@ -184,7 +185,9 @@ async function consultarDisponibilidadPorTipo(
         where: {
           reservaPendiente: {
             fechaHoraSolicitud: {
-              gt: new Date(Date.now() - DURACION_HOLD_MINUTOS * 60 * 1000),
+              gt: new Date(
+                reloj.ahora().getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+              ),
             },
             fechaHoraDeseadaInicio: { lt: finDia },
             fechaHoraDeseadaFin: { gt: inicioDia },
@@ -217,7 +220,7 @@ async function consultarDisponibilidadPorTipo(
     minActual = minSiguiente;
   }
 
-  const ahora = new Date();
+  const ahora = reloj.ahora();
   const limiteHold = new Date(
     ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
   );
@@ -373,7 +376,8 @@ export async function crearReserva(input: CrearReservaInput) {
   }
 
   const limiteAntelacion = new Date(
-    Date.now() + config.tiempoMaximoAntelacionDias * 24 * 60 * 60 * 1000,
+    reloj.ahora().getTime() +
+      config.tiempoMaximoAntelacionDias * 24 * 60 * 60 * 1000,
   );
   if (inicio > limiteAntelacion) {
     throw new DisponibilidadError(
@@ -435,38 +439,25 @@ export async function crearReserva(input: CrearReservaInput) {
     );
   }
 
-  const ahora = new Date();
+  const ahora = reloj.ahora();
   const limiteHold = new Date(
     ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
   );
-  const fechaLimiteCalculada = calcularFechaLimiteCheckIn(inicio, fin);
-  const fechaLimiteCheckIn = input.fechaLimiteCheckIn
-    ? new Date(input.fechaLimiteCheckIn)
-    : fechaLimiteCalculada;
-
-  if (Number.isNaN(fechaLimiteCheckIn.getTime())) {
-    throw new DisponibilidadError("La fecha límite de check-in no es válida");
-  }
-
-  const limiteMaximoTolerancia = new Date(
-    Math.min(
-      inicio.getTime() + MINUTOS_TOLERANCIA_CHECK_IN * 60 * 1000,
-      fin.getTime(),
-    ),
+  const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
+    inicio,
+    fin,
+    config.minutosGraciaCheckIn,
   );
-
-  if (
-    fechaLimiteCheckIn < inicio ||
-    fechaLimiteCheckIn > limiteMaximoTolerancia
-  ) {
-    throw new DisponibilidadError(
-      `La fecha límite de check-in debe situarse entre el inicio del turno y hasta ${MINUTOS_TOLERANCIA_CHECK_IN} minutos posteriores (tolerancia máxima sin exceder el fin de la reserva)`,
-    );
-  }
 
   return prisma.$transaction(async (tx) => {
     // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
     await bloquearRecursos(tx, recursoIds);
+    if (reloj.ahora() >= fechaLimiteCheckIn) {
+      throw new DisponibilidadError(
+        "El plazo de asistencia del horario solicitado ya venció",
+      );
+    }
+    await liberarAusenciasDeRecursos(tx, recursoIds);
 
     // 2. Obtener recursos con sus bloqueos, reservas y reservas pendientes activas
     const diaSemana = diaSemanaFecha(fechaDelEstablecimiento(inicio));
