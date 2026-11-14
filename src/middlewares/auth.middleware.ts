@@ -23,7 +23,6 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
     const usuario = verificarToken(token);
     c.set("usuario", usuario);
     c.set("token", token);
-    await next();
   } catch (error) {
     const message =
       error instanceof Error && error.message === "Token revocado"
@@ -31,4 +30,5 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
         : "Token de autenticación inválido o expirado";
     return c.json({ message }, 401);
   }
+  await next();
 };

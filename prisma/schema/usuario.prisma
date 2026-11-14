@@ -23,6 +23,7 @@ model Usuario {
   perfilExterno      PerfilExterno?
   reservas           Reserva[]
   reservasPendientes ReservaPendiente[]
+  bloqueosCreados     Bloqueo[]
 
   @@unique([tipoDocumento, documento])
   @@unique([email])

@@ -1,10 +1,9 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import type { Usuario } from "@prisma/client";
 import type { RegistroInput } from "../schemas/auth.schema.js";
 
-const prisma = new PrismaClient();
 export const SALT_ROUNDS = 12;
 
 function datosPublicos(usuario: Usuario) {

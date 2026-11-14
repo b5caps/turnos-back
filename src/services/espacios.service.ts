@@ -1,4 +1,5 @@
-import { PrismaClient, type Prisma } from "@prisma/client";
+import { type Prisma } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import type {
   ActualizarEspacioInput,
   CrearEspacioInput,
@@ -6,7 +7,6 @@ import type {
 } from "../schemas/espacios.schema.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
 
-const prisma = new PrismaClient();
 
 export class EspacioNotFoundError extends Error {}
 export class EspacioConflictError extends Error {}
