@@ -1,4 +1,6 @@
-import { PrismaClient, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
+import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
 import type {
   CancelarReservaInput,
   EditarReservaInput,
@@ -11,8 +13,6 @@ import {
   calcularFechaLimiteCheckIn,
   DURACION_HOLD_MINUTOS,
 } from "./disponibilidad.service.js";
-
-const prisma = new PrismaClient();
 
 export class ReservaNotFoundError extends Error {}
 export class ReservaConflictError extends Error {}
@@ -36,7 +36,7 @@ const includeRecursosCompletos = {
       nombre: true,
       apellido: true,
       email: true,
-      legajo: true,
+      perfilUTN: { select: { legajo: true } },
     },
   },
 };
@@ -95,7 +95,7 @@ export async function listarReservas(
             nombre: true,
             apellido: true,
             email: true,
-            legajo: true,
+            perfilUTN: { select: { legajo: true } },
           },
         },
       },
@@ -422,6 +422,18 @@ export async function confirmarReserva(
   usuarioAuth: TokenPayload,
 ) {
   return prisma.$transaction(async (tx) => {
+    const referencia = await tx.reservaPendiente.findUnique({
+      where: { id: reservaPendienteId },
+      select: { recursos: { select: { recursoId: true } } },
+    });
+    if (!referencia)
+      throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+    await bloquearRecursos(
+      tx,
+      referencia.recursos.map((r) => r.recursoId),
+    );
+
+    // Releer después de adquirir los locks: otra confirmación pudo consumir el hold.
     const pendiente = await tx.reservaPendiente.findUnique({
       where: { id: reservaPendienteId },
       include: {
@@ -445,9 +457,10 @@ export async function confirmarReserva(
 
     const ahora = new Date();
     const expiracion = new Date(
-      pendiente.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+      pendiente.fechaHoraSolicitud.getTime() +
+        DURACION_HOLD_MINUTOS * 60 * 1000,
     );
-    if (ahora > expiracion) {
+    if (ahora >= expiracion) {
       await tx.reservaPendienteRecurso.deleteMany({
         where: { reservaPendienteId: pendiente.id },
       });
@@ -464,16 +477,19 @@ export async function confirmarReserva(
       pendiente.fechaHoraDeseadaFin,
     );
 
-    const recursoIds = pendiente.recursos
-      .map((r) => r.recursoId)
-      .sort((a, b) => a - b);
-    if (recursoIds.length > 0) {
-      await tx.$queryRaw`
-        SELECT id FROM "Recurso"
-        WHERE id IN (${Prisma.join(recursoIds)})
-        FOR UPDATE
-      `;
-    }
+    const bloqueo = await tx.bloqueo.findFirst({
+      where: {
+        recursoId: { in: pendiente.recursos.map((r) => r.recursoId) },
+        ...bloqueosSolapados(
+          pendiente.fechaHoraDeseadaInicio,
+          pendiente.fechaHoraDeseadaFin,
+        ),
+      },
+    });
+    if (bloqueo)
+      throw new ReservaConflictError(
+        "El horario se encuentra bloqueado por administración. No se puede confirmar la reserva pendiente.",
+      );
 
     const reservaConfirmada = await tx.reserva.create({
       data: {
@@ -552,7 +568,7 @@ export async function obtenerAsignacionesNotebooks(
                 nombre: true,
                 apellido: true,
                 email: true,
-                legajo: true,
+                perfilUTN: { select: { legajo: true } },
               },
             },
             recursos: {
@@ -583,8 +599,7 @@ export async function obtenerAsignacionesNotebooks(
         activo: (nb as unknown as { activo?: boolean }).activo ?? true,
       },
       estado: (asignacion ? "ASIGNADA" : "DISPONIBLE") as
-        | "ASIGNADA"
-        | "DISPONIBLE",
+        "ASIGNADA" | "DISPONIBLE",
       asignacion: asignacion
         ? {
             reservaId: asignacion.reserva.id,
@@ -602,7 +617,7 @@ export async function obtenerAsignacionesNotebooks(
               nombre: asignacion.reserva.usuario.nombre,
               apellido: asignacion.reserva.usuario.apellido,
               email: asignacion.reserva.usuario.email,
-              legajo: (asignacion.reserva.usuario as any).legajo ?? null,
+              legajo: asignacion.reserva.usuario.perfilUTN?.legajo ?? null,
             },
           }
         : null,

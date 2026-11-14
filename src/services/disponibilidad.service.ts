@@ -1,8 +1,14 @@
-import { PrismaClient, Prisma } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
+import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
+import {
+  diaSemanaFecha,
+  fechaDelEstablecimiento,
+  instanteDelEstablecimiento,
+  minutosDelEstablecimiento,
+  sumarDiasFecha,
+} from "../lib/horarios.js";
 import { ReservaConflictError } from "./reservas.service.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
-
-const prisma = new PrismaClient();
 
 export const DURACION_HOLD_MINUTOS = 10;
 
@@ -58,7 +64,6 @@ export async function consultarDisponibilidadNotebooks(
   }
 
   // Parsear desde y hasta (pueden ser formato HH:mm o ISO)
-  const [año, mes, dia] = input.fecha.split("-").map(Number);
 
   let horaInicio: Date;
   let horaFin: Date;
@@ -67,14 +72,14 @@ export async function consultarDisponibilidadNotebooks(
     horaInicio = new Date(input.desde);
   } else {
     const [h, m] = input.desde.split(":").map(Number);
-    horaInicio = new Date(año, mes - 1, dia, h, m, 0);
+    horaInicio = instanteDelEstablecimiento(input.fecha, h * 60 + m);
   }
 
   if (input.hasta.includes("T")) {
     horaFin = new Date(input.hasta);
   } else {
     const [h, m] = input.hasta.split(":").map(Number);
-    horaFin = new Date(año, mes - 1, dia, h, m, 0);
+    horaFin = instanteDelEstablecimiento(input.fecha, h * 60 + m);
   }
 
   const recursosConTurno = resultado.recursos.map((notebook) => {
@@ -110,9 +115,8 @@ export function calcularFechaLimiteCheckIn(inicio: Date, fin: Date): Date {
 async function consultarDisponibilidadPorTipo(
   input: ConsultaDisponibilidadInput,
 ) {
-  const [año, mes, dia] = input.fecha.split("-").map(Number);
-  const fechaConsultada = new Date(año, mes - 1, dia);
-  const diaSemana = fechaConsultada.getDay();
+  const fechaConsultada = instanteDelEstablecimiento(input.fecha);
+  const diaSemana = diaSemanaFecha(input.fecha);
 
   const config = await obtenerConfiguracion();
 
@@ -162,18 +166,7 @@ async function consultarDisponibilidadPorTipo(
         },
       },
       bloqueos: {
-        where: {
-          OR: [
-            {
-              fechaHoraInicio: { lt: finDia },
-              fechaHoraFin: { gt: inicioDia },
-            },
-            {
-              fechaHoraInicio: { lt: finDia },
-              fechaHoraFin: null,
-            },
-          ],
-        },
+        where: bloqueosSolapados(inicioDia, finDia),
       },
       reservas: {
         where: {
@@ -291,10 +284,7 @@ async function consultarDisponibilidadPorTipo(
         const cuposLibres = Math.max(0, recurso.capacidad - ocupacion);
 
         let motivoNoDisponible:
-          | "fuera_de_horario"
-          | "bloqueado"
-          | "sin_cupos"
-          | null = null;
+          "fuera_de_horario" | "bloqueado" | "sin_cupos" | null = null;
         if (!dentroDeHorario) {
           motivoNoDisponible = "fuera_de_horario";
         } else if (hayBloqueo) {
@@ -355,6 +345,15 @@ export async function crearReserva(input: CrearReservaInput) {
     inicio >= fin
   ) {
     throw new DisponibilidadError("El rango horario no es válido");
+  }
+
+  const finDiaInicio = instanteDelEstablecimiento(
+    sumarDiasFecha(fechaDelEstablecimiento(inicio), 1),
+  );
+  if (fin > finDiaInicio) {
+    throw new DisponibilidadError(
+      "La reserva debe comenzar y finalizar en el mismo día del establecimiento",
+    );
   }
 
   // Validaciones según configuración del establecimiento
@@ -467,14 +466,10 @@ export async function crearReserva(input: CrearReservaInput) {
 
   return prisma.$transaction(async (tx) => {
     // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
-    await tx.$queryRaw`
-      SELECT id FROM "Recurso"
-      WHERE id IN (${Prisma.join(recursoIds)})
-      FOR UPDATE
-    `;
+    await bloquearRecursos(tx, recursoIds);
 
     // 2. Obtener recursos con sus bloqueos, reservas y reservas pendientes activas
-    const diaSemana = inicio.getDay();
+    const diaSemana = diaSemanaFecha(fechaDelEstablecimiento(inicio));
     const recursos = await tx.recurso.findMany({
       where: {
         id: { in: recursoIds },
@@ -484,18 +479,7 @@ export async function crearReserva(input: CrearReservaInput) {
           where: { diaSemana },
         },
         bloqueos: {
-          where: {
-            OR: [
-              {
-                fechaHoraInicio: { lt: fin },
-                fechaHoraFin: { gt: inicio },
-              },
-              {
-                fechaHoraInicio: { lt: fin },
-                fechaHoraFin: null,
-              },
-            ],
-          },
+          where: bloqueosSolapados(inicio, fin),
         },
         reservas: {
           where: {
@@ -528,10 +512,17 @@ export async function crearReserva(input: CrearReservaInput) {
       throw new DisponibilidadError("Uno o más recursos no existen");
     }
 
-    const minutosInicioReq = inicio.getHours() * 60 + inicio.getMinutes();
-    const minutosFinReq = fin.getHours() * 60 + fin.getMinutes();
+    const minutosInicioReq = minutosDelEstablecimiento(inicio);
+    const minutosFinReq =
+      fin.getTime() === finDiaInicio.getTime()
+        ? 1440
+        : minutosDelEstablecimiento(fin);
 
     for (const recurso of recursos) {
+      if (!recurso.activo)
+        throw new DisponibilidadError(
+          `El recurso ${recurso.nombre} se encuentra inactivo`,
+        );
       // Validar horario del recurso para ese día
       const dentroDeHorario =
         recurso.disponibilidades.length === 0 ||
@@ -595,7 +586,7 @@ export async function crearReserva(input: CrearReservaInput) {
               nombre: true,
               apellido: true,
               email: true,
-              legajo: true,
+              perfilUTN: { select: { legajo: true } },
             },
           },
         },

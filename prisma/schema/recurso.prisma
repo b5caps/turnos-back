@@ -46,6 +46,11 @@ model Bloqueo {
   fechaHoraInicio DateTime
   fechaHoraFin    DateTime?
   motivo          String
+  fechaCreacion   DateTime  @default(now())
+  creadoPorId     Int?
+  creadoPor       Usuario?  @relation(fields: [creadoPorId], references: [id])
+
+  @@index([recursoId, fechaHoraInicio])
 }
 
 model ReservaRecurso {
