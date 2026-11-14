@@ -59,7 +59,7 @@ hay que conciliar esa base con el esquema del repositorio antes de aplicar migra
   - **Titular de la reserva**:
     - **Usuarios comunes (`UTN`, `EXTERNO`)**: Solo pueden reservar a su propio nombre (se toma del token JWT). Si intentan especificar un `usuarioId` ajeno, retorna `403`.
     - **Administrador (`ADMIN`)**: Puede reservar a su propio nombre (ej. reserva institucional / bloqueo de periodo determinado) o en nombre de otro usuario especificando `usuarioId` en el cuerpo.
-  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "confirmarInmediato": false, "observacion": "..." }` (`usuarioId` y `fechaLimiteCheckIn` son opcionales; el backend calcula automáticamente la fecha límite de check-in con 15 minutos de tolerancia posterior al inicio).
+  - **Cuerpo**: `{ "usuarioId": 12, "recursoIds": [1, 2], "fechaHoraInicio": "2026-09-05T14:00:00Z", "fechaHoraFin": "2026-09-05T15:00:00Z", "confirmarInmediato": false, "observacion": "..." }` (`usuarioId` es opcional; al confirmar, el backend calcula la fecha límite de check-in según `minutosGraciaCheckIn`). El cliente no puede elegir ni extender ese límite.
   - **Retorno**: `201` con los datos de la `ReservaPendiente` (incluye `fechaExpiracionHold` y `esPendiente: true`) o de la `Reserva` confirmada.
 
 - `POST /api/reservas/:id/confirmar`: Confirmar definitivamente una reserva pendiente (Hold).
@@ -207,3 +207,146 @@ disponibilidad inmediata, superposición de bloqueos, conservación de reservas 
 holds previos. Las pruebas concurrentes ponen solicitudes HTTP en espera de un
 lock real y verifican ambos órdenes entre bloqueo y reserva/confirmación, además
 de impedir que dos confirmaciones simultáneas dupliquen la reserva.
+
+## Check-in mediante QR y liberación por ausencia
+
+### Tiempo de gracia
+
+`GET /api/configuracion` y `PATCH /api/configuracion` (ADMIN) exponen
+`minutosGraciaCheckIn`, entero entre 1 y 120, con valor inicial 15.
+
+```json
+{ "minutosGraciaCheckIn": 15 }
+```
+
+Al confirmar un hold o crear una reserva inmediata se guarda
+`fechaLimiteCheckIn = min(inicio + gracia, fin)`. Cambiar la configuración no
+recalcula las reservas ya confirmadas. Enviar `fechaLimiteCheckIn` en el cuerpo
+de creación no modifica el límite calculado por el servidor. Un hold no equivale
+a asistencia y no puede convertirse en reserva si su plazo de asistencia venció.
+
+### Emitir e imprimir el QR del espacio
+
+Configurar `CHECK_IN_URL` con la URL de la página que atenderá el escaneo, por
+ejemplo `https://biblioteca.example/asistencia`. En desarrollo el valor por
+defecto es `http://localhost:5000/asistencia`.
+
+```text
+POST   /api/espacios/{id}/qr     ADMIN: emitir o reemplazar
+DELETE /api/espacios/{id}/qr     ADMIN: revocar
+```
+
+POST devuelve `201` con `{ data: { id, recursoId, fechaCreacion, tokenQr, url,
+qrSvg } }`. `qrSvg` contiene la imagen SVG imprimible. La URL codificada usa un
+fragmento `#tokenQr=...` para no enviar el token al servidor web al abrirla.
+El consumidor debe leer ese fragmento y enviarlo en el cuerpo de la API.
+
+El token aleatorio y el SVG se entregan únicamente al emitirlos. Guardar el SVG
+para imprimirlo: el servidor almacena solo el hash SHA-256 del token. Cada
+emisión revoca el QR anterior y existe como máximo uno vigente por espacio.
+DELETE devuelve `204`; si no existe un QR vigente, `404`. Las notebooks no
+admiten QR de espacio. Todos los endpoints requieren sesión autenticada.
+
+El QR es estático y compartido por las reservas de ese espacio: identifica el
+lugar, mientras la sesión y el horario determinan qué reserva puede registrar
+asistencia. No constituye por sí solo una prueba de proximidad física.
+
+### Consultar y registrar la llegada
+
+Tras escanear y autenticar al usuario:
+
+```http
+POST /api/reservas/check-in/consultar
+Authorization: Bearer <sesion>
+Content-Type: application/json
+
+{ "tokenQr": "<token-del-qr>" }
+```
+
+Devuelve `{ data: { recursoId, reservas: [...] } }` con reservas propias
+confirmadas en curso, dentro del plazo de llegada o con asistencia ya registrada.
+No registra asistencia ni expone reservas de otros usuarios.
+
+```http
+POST /api/reservas/{id}/check-in
+Authorization: Bearer <sesion>
+Content-Type: application/json
+
+{ "tokenQr": "<token-del-qr>" }
+```
+
+El QR debe estar vigente y corresponder a un espacio de la reserva. Se registra
+la llegada de la reserva completa, incluidos sus recursos asociados. Requiere
+titular autenticado y reserva confirmada, no cancelada ni finalizada, con hora
+del servidor en `[fechaHoraInicio, fechaLimiteCheckIn)`. En el límite exacto ya
+corresponde ausencia. No se aceptan fechas provistas por el cliente.
+
+Respuesta `200`: `{ data: { id, estado, fechaLimiteCheckIn, fechaHoraCheckIn,
+origenCheckIn, checkInRegistradoPorId } }`. Los reintentos preservan fecha y
+autoría originales, incluso si pasó el plazo tras el primer check-in válido.
+
+El administrador también puede registrar la llegada del titular, sin QR:
+
+```text
+POST /api/reservas/{id}/check-in/manual
+```
+
+Aplica el mismo plazo y registra origen `ADMIN` y la identidad del administrador.
+El flujo QR registra origen `QR` y la identidad del titular. Los IDs corresponden
+a reservas definitivas, no a holds.
+
+Errores: `400` datos inválidos; `401` sin sesión; `403` sin permisos; `404` reserva
+o QR inexistente/revocado; `409` horario no habilitado, reserva no confirmada,
+cancelada/finalizada/liberada o QR de otro espacio. El check-in administrativo
+no permite sobrescribir asistencias ni reactivar reservas liberadas.
+
+### Liberación automática
+
+Al iniciar el servidor se ejecuta el proceso de ausencias y luego cada 30
+segundos, en lotes de hasta 100 reservas. Busca reservas confirmadas cuyo límite
+se alcanzó, sin asistencia, cancelación ni checkout. Guarda:
+
+```text
+tipoCancelacion = AUSENCIA
+fechaHoraCancelacion = hora del servidor
+motivoCancelacion = Liberada automáticamente por ausencia
+```
+
+La reserva y sus relaciones se conservan como historial. No se modifica el
+horario original. Desde el commit deja de consumir cupo tanto en la sala como
+en la notebook asociada. Otros bloqueos, reservas y horarios siguen aplicándose.
+Además, crear una nueva reserva regulariza las ausencias vencidas que ocupen sus
+recursos dentro de la misma transacción: no necesita esperar al siguiente ciclo.
+
+Cada operación coordina locks de recursos (en orden de ID) y de reserva. El
+check-in relee las condiciones y la hora después de esperar el lock. Los ciclos
+simultáneos, incluso de distintos procesos, no duplican la liberación. Un error
+se registra en el servidor y el siguiente ciclo vuelve a intentarlo.
+
+Las respuestas de reservas incorporan `estado`, `tipoCancelacion`,
+`origenCheckIn` y `checkInRegistradoPorId`. Los estados expuestos son
+`PENDIENTE`, `CONFIRMADA`, `EN_CURSO`, `FINALIZADA`, `CANCELADA` y
+`LIBERADA_POR_AUSENCIA`. Una reserva cancelada sin clasificación anterior
+mantiene `tipoCancelacion: null`; las nuevas cancelaciones manuales distinguen
+`USUARIO` y `ADMINISTRADOR`.
+
+```text
+GET /api/reservas?estado=liberadas_por_ausencia
+```
+
+El filtro `canceladas` también incluye ausencias. La migración
+`20261115000000_check_in_ausencias` preserva sin reclasificar el historial ya
+finalizado antes de aplicarla (`controlAsistencia=false`); las reservas nuevas y
+las que todavía no finalizaron quedan sujetas al control automático. Los límites
+ya existentes se conservan.
+
+### Verificación
+
+Los comandos de migración, compilación y pruebas anteriores siguen aplicándose.
+La integración incluye QR/SVG, permisos, revocación, consulta de reservas propias,
+check-in manual y QR, plazo exacto, idempotencia, gracia configurable, liberación
+de sala y notebook, estado/filtro, ejecución periódica y tiempo simulado. Las
+pruebas usan un reloj controlable y PostgreSQL real para comprobar operaciones
+concurrentes. Los archivos de integración se ejecutan secuencialmente para
+aislar la configuración compartida; sus casos de concurrencia siguen enviando
+operaciones simultáneas.

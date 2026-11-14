@@ -1,4 +1,9 @@
 import { Prisma } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
+import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
+import { bloquearReserva } from "../lib/reservas-lock.js";
+import { obtenerConfiguracion } from "./configuracion.service.js";
+import { reloj } from "../lib/reloj.js";
 import type {
   CancelarReservaInput,
   EditarReservaInput,
@@ -11,7 +16,6 @@ import {
   calcularFechaLimiteCheckIn,
   DURACION_HOLD_MINUTOS,
 } from "./disponibilidad.service.js";
-import { prisma } from "../lib/prisma.js";
 
 export class ReservaNotFoundError extends Error {}
 export class ReservaConflictError extends Error {}
@@ -58,7 +62,7 @@ export async function listarReservas(
     where.usuarioId = usuarioAuth.id;
   }
 
-  const ahora = new Date();
+  const ahora = reloj.ahora();
 
   if (filtros.estado === "pendientes") {
     const limiteExpiracion = new Date(
@@ -135,6 +139,8 @@ export async function listarReservas(
     where.fechaHoraFin = { gt: ahora };
   } else if (filtros.estado === "canceladas") {
     where.fechaHoraCancelacion = { not: null };
+  } else if (filtros.estado === "liberadas_por_ausencia") {
+    where.tipoCancelacion = "AUSENCIA";
   } else if (filtros.estado === "finalizadas") {
     where.fechaHoraCancelacion = null;
     where.fechaHoraFin = { lte: ahora };
@@ -190,105 +196,51 @@ export async function editarReserva(
   input: EditarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-    include: includeRecursosCompletos,
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      await bloquearReserva(tx, id, input.notebookId ? [input.notebookId] : []);
+      const reserva = await tx.reserva.findUnique({
+        where: { id },
+        include: includeRecursosCompletos,
+      });
 
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
+      if (!reserva) {
+        throw new ReservaNotFoundError("Reserva no encontrada");
+      }
 
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para modificar esta reserva",
-    );
-  }
+      if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+        throw new ReservaForbiddenError(
+          "No tienes permisos para modificar esta reserva",
+        );
+      }
 
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError(
-      "No se puede modificar una reserva que se encuentra cancelada",
-    );
-  }
+      if (reserva.fechaHoraCancelacion !== null) {
+        throw new ReservaConflictError(
+          "No se puede modificar una reserva que se encuentra cancelada",
+        );
+      }
 
-  if (reserva.fechaHoraCheckIn !== null) {
-    throw new ReservaBusinessError(
-      "No se puede modificar una reserva que ya realizó check-in",
-    );
-  }
+      if (reserva.fechaHoraCheckIn !== null) {
+        throw new ReservaBusinessError(
+          "No se puede modificar una reserva que ya realizó check-in",
+        );
+      }
 
-  const ahora = new Date();
-  if (reserva.fechaHoraFin <= ahora) {
-    throw new ReservaBusinessError(
-      "No se puede modificar una reserva que ya ha finalizado",
-    );
-  }
+      const ahora = reloj.ahora();
+      if (reserva.fechaHoraFin <= ahora) {
+        throw new ReservaBusinessError(
+          "No se puede modificar una reserva que ya ha finalizado",
+        );
+      }
 
-  return prisma.$transaction(async (tx) => {
-    // Si se especifica notebookId (número o null para desvincular)
-    if (input.notebookId !== undefined) {
-      const notebookActual = reserva.recursos.find(
-        (r) => r.recurso.notebook !== null,
-      );
+      // Si se especifica notebookId (número o null para desvincular)
+      if (input.notebookId !== undefined) {
+        const notebookActual = reserva.recursos.find(
+          (r) => r.recurso.notebook !== null,
+        );
 
-      if (input.notebookId === null) {
-        // Desvincular notebook actual si existía
-        if (notebookActual) {
-          await tx.reservaRecurso.delete({
-            where: {
-              reservaId_recursoId: {
-                reservaId: id,
-                recursoId: notebookActual.recursoId,
-              },
-            },
-          });
-        }
-      } else {
-        const nuevaNotebookId = input.notebookId;
-
-        // Si es distinta a la que ya tiene asignada
-        if (!notebookActual || notebookActual.recursoId !== nuevaNotebookId) {
-          // Verificar existencia y que sea tipo notebook
-          const recursoNotebook = await tx.recurso.findUnique({
-            where: { id: nuevaNotebookId },
-            include: { notebook: true },
-          });
-
-          if (!recursoNotebook || !recursoNotebook.notebook) {
-            throw new ReservaNotFoundError(
-              "La notebook especificada no existe o no es un dispositivo válido",
-            );
-          }
-
-          if (
-            (recursoNotebook as unknown as { activo?: boolean }).activo ===
-            false
-          ) {
-            throw new ReservaBusinessError(
-              `La notebook '${recursoNotebook.nombre}' se encuentra inactiva y no puede asignarse`,
-            );
-          }
-
-          // Verificar que no esté asignada en otra reserva en ese horario
-          const conflicto = await tx.reservaRecurso.findFirst({
-            where: {
-              recursoId: nuevaNotebookId,
-              reservaId: { not: id },
-              reserva: {
-                fechaHoraCancelacion: null,
-                fechaHoraInicio: { lt: reserva.fechaHoraFin },
-                fechaHoraFin: { gt: reserva.fechaHoraInicio },
-              },
-            },
-          });
-
-          if (conflicto) {
-            throw new ReservaConflictError(
-              `La notebook '${recursoNotebook.nombre}' no se encuentra disponible en el horario de la reserva`,
-            );
-          }
-
-          // Remover la notebook previa si existía
+        if (input.notebookId === null) {
+          // Desvincular notebook actual si existía
           if (notebookActual) {
             await tx.reservaRecurso.delete({
               where: {
@@ -299,29 +251,87 @@ export async function editarReserva(
               },
             });
           }
+        } else {
+          const nuevaNotebookId = input.notebookId;
 
-          // Asociar la nueva notebook
-          await tx.reservaRecurso.create({
-            data: {
-              reservaId: id,
-              recursoId: nuevaNotebookId,
-            },
-          });
+          // Si es distinta a la que ya tiene asignada
+          if (!notebookActual || notebookActual.recursoId !== nuevaNotebookId) {
+            // Verificar existencia y que sea tipo notebook
+            const recursoNotebook = await tx.recurso.findUnique({
+              where: { id: nuevaNotebookId },
+              include: { notebook: true },
+            });
+
+            if (!recursoNotebook || !recursoNotebook.notebook) {
+              throw new ReservaNotFoundError(
+                "La notebook especificada no existe o no es un dispositivo válido",
+              );
+            }
+
+            if (
+              (recursoNotebook as unknown as { activo?: boolean }).activo ===
+              false
+            ) {
+              throw new ReservaBusinessError(
+                `La notebook '${recursoNotebook.nombre}' se encuentra inactiva y no puede asignarse`,
+              );
+            }
+
+            // Verificar que no esté asignada en otra reserva en ese horario
+            const conflicto = await tx.reservaRecurso.findFirst({
+              where: {
+                recursoId: nuevaNotebookId,
+                reservaId: { not: id },
+                reserva: {
+                  fechaHoraCancelacion: null,
+                  fechaHoraInicio: { lt: reserva.fechaHoraFin },
+                  fechaHoraFin: { gt: reserva.fechaHoraInicio },
+                },
+              },
+            });
+
+            if (conflicto) {
+              throw new ReservaConflictError(
+                `La notebook '${recursoNotebook.nombre}' no se encuentra disponible en el horario de la reserva`,
+              );
+            }
+
+            // Remover la notebook previa si existía
+            if (notebookActual) {
+              await tx.reservaRecurso.delete({
+                where: {
+                  reservaId_recursoId: {
+                    reservaId: id,
+                    recursoId: notebookActual.recursoId,
+                  },
+                },
+              });
+            }
+
+            // Asociar la nueva notebook
+            await tx.reservaRecurso.create({
+              data: {
+                reservaId: id,
+                recursoId: nuevaNotebookId,
+              },
+            });
+          }
         }
       }
-    }
 
-    const dataUpdate: Prisma.ReservaUpdateInput = {};
-    if (input.observacion !== undefined) {
-      dataUpdate.observacion = input.observacion?.trim() || null;
-    }
+      const dataUpdate: Prisma.ReservaUpdateInput = {};
+      if (input.observacion !== undefined) {
+        dataUpdate.observacion = input.observacion?.trim() || null;
+      }
 
-    return tx.reserva.update({
-      where: { id },
-      data: dataUpdate,
-      include: includeRecursosCompletos,
-    });
-  }, { maxWait: 10000, timeout: 15000 });
+      return tx.reserva.update({
+        where: { id },
+        data: dataUpdate,
+        include: includeRecursosCompletos,
+      });
+    },
+    { maxWait: 10000, timeout: 15000 },
+  );
 }
 
 export async function cancelarReserva(
@@ -329,56 +339,62 @@ export async function cancelarReserva(
   input: CancelarReservaInput | undefined,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-  });
+  return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
 
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
 
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para cancelar esta reserva",
-    );
-  }
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para cancelar esta reserva",
+      );
+    }
 
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-  }
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
 
-  if (reserva.fechaHoraCheckIn !== null) {
-    throw new ReservaBusinessError(
-      "No se puede cancelar una reserva que ya realizó check-in",
-    );
-  }
+    if (reserva.fechaHoraCheckIn !== null) {
+      throw new ReservaBusinessError(
+        "No se puede cancelar una reserva que ya realizó check-in",
+      );
+    }
 
-  const ahora = new Date();
-  if (reserva.fechaHoraFin <= ahora) {
-    throw new ReservaBusinessError(
-      "No se puede cancelar una reserva cuya fecha de fin ya ha transcurrido",
-    );
-  }
+    const ahora = reloj.ahora();
+    if (reserva.fechaHoraFin <= ahora) {
+      throw new ReservaBusinessError(
+        "No se puede cancelar una reserva cuya fecha de fin ya ha transcurrido",
+      );
+    }
 
-  const resultado = await prisma.reserva.updateMany({
-    where: {
-      id,
-      fechaHoraCancelacion: null,
-      fechaHoraCheckIn: null,
-    },
-    data: {
-      fechaHoraCancelacion: ahora,
-      motivoCancelacion: input?.motivoCancelacion?.trim() || null,
-    },
-  });
+    const resultado = await tx.reserva.updateMany({
+      where: {
+        id,
+        fechaHoraCancelacion: null,
+        fechaHoraCheckIn: null,
+      },
+      data: {
+        fechaHoraCancelacion: ahora,
+        motivoCancelacion: input?.motivoCancelacion?.trim() || null,
+        tipoCancelacion:
+          usuarioAuth.rol === "ADMIN" ? "ADMINISTRADOR" : "USUARIO",
+      },
+    });
 
-  if (resultado.count === 0) {
-    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-  }
+    if (resultado.count === 0) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
 
-  return prisma.reserva.findUniqueOrThrow({
-    where: { id },
-    include: includeRecursosCompletos,
+    return tx.reserva.findUniqueOrThrow({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
   });
 }
 
@@ -387,66 +403,69 @@ export async function finalizarReserva(
   input: FinalizarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const reserva = await prisma.reserva.findUnique({
-    where: { id },
-  });
+  return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
+    });
 
-  if (!reserva) {
-    throw new ReservaNotFoundError("Reserva no encontrada");
-  }
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
 
-  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-    throw new ReservaForbiddenError(
-      "No tienes permisos para finalizar esta reserva",
-    );
-  }
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para finalizar esta reserva",
+      );
+    }
 
-  if (reserva.fechaHoraCancelacion !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-  }
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
 
-  if (reserva.fechaHoraCheckOut !== null) {
-    throw new ReservaConflictError("La reserva ya se encuentra finalizada");
-  }
+    if (reserva.fechaHoraCheckOut !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra finalizada");
+    }
 
-  if (reserva.fechaHoraCheckIn === null) {
-    throw new ReservaBusinessError(
-      "No se puede finalizar una reserva que no ha realizado check-in",
-    );
-  }
+    if (reserva.fechaHoraCheckIn === null) {
+      throw new ReservaBusinessError(
+        "No se puede finalizar una reserva que no ha realizado check-in",
+      );
+    }
 
-  const ahora = new Date();
-  if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
-    throw new ReservaBusinessError(
-      "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
-    );
-  }
+    const ahora = reloj.ahora();
+    if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
+      throw new ReservaBusinessError(
+        "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
+      );
+    }
 
-  const resultado = await prisma.reserva.updateMany({
-    where: {
-      id,
-      fechaHoraCancelacion: null,
-      fechaHoraCheckOut: null,
-      fechaHoraCheckIn: { not: null },
-    },
-    data: {
-      fechaHoraCheckOut: ahora,
-      fechaHoraFin: ahora,
-      ...(input?.observacion?.trim()
-        ? { observacion: input.observacion.trim() }
-        : {}),
-    },
-  });
+    const resultado = await tx.reserva.updateMany({
+      where: {
+        id,
+        fechaHoraCancelacion: null,
+        fechaHoraCheckOut: null,
+        fechaHoraCheckIn: { not: null },
+      },
+      data: {
+        fechaHoraCheckOut: ahora,
+        fechaHoraFin: ahora,
+        ...(input?.observacion?.trim()
+          ? { observacion: input.observacion.trim() }
+          : {}),
+      },
+    });
 
-  if (resultado.count === 0) {
-    throw new ReservaConflictError(
-      "La reserva ya se encuentra finalizada o cancelada",
-    );
-  }
+    if (resultado.count === 0) {
+      throw new ReservaConflictError(
+        "La reserva ya se encuentra finalizada o cancelada",
+      );
+    }
 
-  return prisma.reserva.findUniqueOrThrow({
-    where: { id },
-    include: includeRecursosCompletos,
+    return tx.reserva.findUniqueOrThrow({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
   });
 }
 
@@ -454,99 +473,112 @@ export async function confirmarReserva(
   reservaPendienteId: number,
   usuarioAuth: TokenPayload,
 ) {
-  return prisma.$transaction(async (tx) => {
-    const referencia = await tx.reservaPendiente.findUnique({
-      where: { id: reservaPendienteId },
-      select: { recursos: { select: { recursoId: true } } },
-    });
-    if (!referencia)
-      throw new ReservaNotFoundError("Reserva pendiente no encontrada");
-    await bloquearRecursos(
-      tx,
-      referencia.recursos.map((r) => r.recursoId),
-    );
+  const config = await obtenerConfiguracion();
+  return prisma.$transaction(
+    async (tx) => {
+      const referencia = await tx.reservaPendiente.findUnique({
+        where: { id: reservaPendienteId },
+        select: { recursos: { select: { recursoId: true } } },
+      });
+      if (!referencia)
+        throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+      await bloquearRecursos(
+        tx,
+        referencia.recursos.map((r) => r.recursoId),
+      );
 
-    // Releer después de adquirir los locks: otra confirmación pudo consumir el hold.
-    const pendiente = await tx.reservaPendiente.findUnique({
-      where: { id: reservaPendienteId },
-      include: {
-        recursos: {
-          include: {
-            recurso: true,
+      // Releer después de adquirir los locks: otra confirmación pudo consumir el hold.
+      const pendiente = await tx.reservaPendiente.findUnique({
+        where: { id: reservaPendienteId },
+        include: {
+          recursos: {
+            include: {
+              recurso: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    if (!pendiente) {
-      throw new ReservaNotFoundError("Reserva pendiente no encontrada");
-    }
+      if (!pendiente) {
+        throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+      }
 
-    if (usuarioAuth.rol !== "ADMIN" && pendiente.usuarioId !== usuarioAuth.id) {
-      throw new ReservaForbiddenError(
-        "No tienes permisos para confirmar esta reserva pendiente",
+      if (
+        usuarioAuth.rol !== "ADMIN" &&
+        pendiente.usuarioId !== usuarioAuth.id
+      ) {
+        throw new ReservaForbiddenError(
+          "No tienes permisos para confirmar esta reserva pendiente",
+        );
+      }
+
+      const ahora = reloj.ahora();
+      const expiracion = new Date(
+        pendiente.fechaHoraSolicitud.getTime() +
+          DURACION_HOLD_MINUTOS * 60 * 1000,
       );
-    }
+      if (ahora >= expiracion) {
+        await tx.reservaPendienteRecurso.deleteMany({
+          where: { reservaPendienteId: pendiente.id },
+        });
+        await tx.reservaPendiente.delete({
+          where: { id: pendiente.id },
+        });
+        throw new ReservaConflictError(
+          "El tiempo de 10 minutos para confirmar la reserva ha expirado. El cupo ha sido liberado.",
+        );
+      }
 
-    const ahora = new Date();
-    const expiracion = new Date(
-      pendiente.fechaHoraSolicitud.getTime() +
-        DURACION_HOLD_MINUTOS * 60 * 1000,
-    );
-    if (ahora >= expiracion) {
+      const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
+        pendiente.fechaHoraDeseadaInicio,
+        pendiente.fechaHoraDeseadaFin,
+        config.minutosGraciaCheckIn,
+      );
+      if (reloj.ahora() >= fechaLimiteCheckIn) {
+        throw new ReservaConflictError(
+          "El plazo de asistencia de la reserva ya venció",
+        );
+      }
+
+      const bloqueo = await tx.bloqueo.findFirst({
+        where: {
+          recursoId: { in: pendiente.recursos.map((r) => r.recursoId) },
+          ...bloqueosSolapados(
+            pendiente.fechaHoraDeseadaInicio,
+            pendiente.fechaHoraDeseadaFin,
+          ),
+        },
+      });
+      if (bloqueo)
+        throw new ReservaConflictError(
+          "El horario se encuentra bloqueado por administración. No se puede confirmar la reserva pendiente.",
+        );
+
+      const reservaConfirmada = await tx.reserva.create({
+        data: {
+          usuarioId: pendiente.usuarioId,
+          fechaHoraInicio: pendiente.fechaHoraDeseadaInicio,
+          fechaHoraFin: pendiente.fechaHoraDeseadaFin,
+          fechaLimiteCheckIn,
+          fechaHoraConfirmacion: ahora,
+          recursos: {
+            create: pendiente.recursos.map((r) => ({ recursoId: r.recursoId })),
+          },
+        },
+        include: includeRecursosCompletos,
+      });
+
       await tx.reservaPendienteRecurso.deleteMany({
         where: { reservaPendienteId: pendiente.id },
       });
       await tx.reservaPendiente.delete({
         where: { id: pendiente.id },
       });
-      throw new ReservaConflictError(
-        "El tiempo de 10 minutos para confirmar la reserva ha expirado. El cupo ha sido liberado.",
-      );
-    }
 
-    const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
-      pendiente.fechaHoraDeseadaInicio,
-      pendiente.fechaHoraDeseadaFin,
-    );
-
-    const bloqueo = await tx.bloqueo.findFirst({
-      where: {
-        recursoId: { in: pendiente.recursos.map((r) => r.recursoId) },
-        ...bloqueosSolapados(
-          pendiente.fechaHoraDeseadaInicio,
-          pendiente.fechaHoraDeseadaFin,
-        ),
-      },
-    });
-    if (bloqueo)
-      throw new ReservaConflictError(
-        "El horario se encuentra bloqueado por administración. No se puede confirmar la reserva pendiente.",
-      );
-
-    const reservaConfirmada = await tx.reserva.create({
-      data: {
-        usuarioId: pendiente.usuarioId,
-        fechaHoraInicio: pendiente.fechaHoraDeseadaInicio,
-        fechaHoraFin: pendiente.fechaHoraDeseadaFin,
-        fechaLimiteCheckIn,
-        fechaHoraConfirmacion: ahora,
-        recursos: {
-          create: pendiente.recursos.map((r) => ({ recursoId: r.recursoId })),
-        },
-      },
-      include: includeRecursosCompletos,
-    });
-
-    await tx.reservaPendienteRecurso.deleteMany({
-      where: { reservaPendienteId: pendiente.id },
-    });
-    await tx.reservaPendiente.delete({
-      where: { id: pendiente.id },
-    });
-
-    return reservaConfirmada;
-  }, { maxWait: 10000, timeout: 15000 });
+      return reservaConfirmada;
+    },
+    { maxWait: 10000, timeout: 15000 },
+  );
 }
 
 export async function obtenerAsignacionesNotebooks(

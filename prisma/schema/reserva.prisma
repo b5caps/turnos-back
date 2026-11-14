@@ -1,4 +1,13 @@
-// prisma/schema/reserva.prisma
+enum TipoCancelacion {
+  USUARIO
+  ADMINISTRADOR
+  AUSENCIA
+}
+
+enum OrigenCheckIn {
+  QR
+  ADMIN
+}
 
 model Reserva {
   id                    Int              @id @default(autoincrement())
@@ -7,14 +16,21 @@ model Reserva {
   fechaHoraInicio       DateTime
   fechaHoraFin          DateTime
   fechaLimiteCheckIn    DateTime
+  controlAsistencia    Boolean @default(true)
   fechaHoraConfirmacion DateTime?
   fechaHoraCancelacion  DateTime?
   motivoCancelacion     String?
+  tipoCancelacion       TipoCancelacion?
   fechaHoraCheckIn      DateTime?
+  origenCheckIn         OrigenCheckIn?
+  checkInRegistradoPorId Int?
+  checkInRegistradoPor   Usuario? @relation("CheckInRegistradoPor", fields: [checkInRegistradoPorId], references: [id], onDelete: SetNull)
   fechaHoraCheckOut     DateTime?
   fechaCreacion         DateTime         @default(now())
   observacion           String?
   recursos              ReservaRecurso[]
+
+  @@index([fechaLimiteCheckIn])
 }
 
 model ReservaPendiente {

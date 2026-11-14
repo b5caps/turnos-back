@@ -2,6 +2,9 @@ import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { app } from "./app.js";
 import { limpiarHoldsExpirados } from "./services/limpieza.service.js";
+import { iniciarLiberacionPorAusencia } from "./services/ausencias.service.js";
+
+iniciarLiberacionPorAusencia();
 
 setInterval(() => {
   limpiarHoldsExpirados().catch((err) => {

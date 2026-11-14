@@ -9,6 +9,7 @@ import espaciosRoutes from "./routes/espacios.routes.js";
 import configuracionRoutes from "./routes/configuracion.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import bloqueosRoutes from "./routes/bloqueos.routes.js";
+import asistenciaRoutes from "./routes/asistencia.routes.js";
 
 export const app = new OpenAPIHono();
 
@@ -24,6 +25,7 @@ app.route("/api/espacios", espaciosRoutes);
 app.route("/api/espacios", bloqueosRoutes);
 app.route("/api/configuracion", configuracionRoutes);
 app.route("/api/dashboard", dashboardRoutes);
+app.route("/api", asistenciaRoutes);
 
 app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
   type: "http",

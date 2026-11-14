@@ -63,20 +63,10 @@ export const crearReservaSchema = z
     fechaHoraFin: z.string().datetime({ offset: true, local: true }).openapi({
       example: "2026-10-25T16:00:00.000Z",
     }),
-    fechaLimiteCheckIn: z
-      .string()
-      .datetime({ offset: true, local: true })
-      .optional()
-      .openapi({
-        example: "2026-10-25T14:15:00.000Z",
-      }),
-    confirmarInmediato: z
-      .boolean()
-      .optional()
-      .openapi({
-        description:
-          "Confirmar inmediatamente sin pasar por reserva pendiente (solo administradores)",
-      }),
+    confirmarInmediato: z.boolean().optional().openapi({
+      description:
+        "Confirmar inmediatamente sin pasar por reserva pendiente (solo administradores)",
+    }),
     observacion: z.string().trim().max(500).optional().openapi({
       example: "Reunión de equipo docente",
     }),
@@ -150,6 +140,17 @@ export const reservaDetalleSchema = z.object({
   esPendiente: z.boolean().optional(),
   fechaHoraCancelacion: z.string().nullable().openapi({ example: null }),
   motivoCancelacion: z.string().nullable().openapi({ example: null }),
+  tipoCancelacion: z.enum(["USUARIO", "ADMINISTRADOR", "AUSENCIA"]).nullable(),
+  estado: z.enum([
+    "PENDIENTE",
+    "CONFIRMADA",
+    "EN_CURSO",
+    "FINALIZADA",
+    "CANCELADA",
+    "LIBERADA_POR_AUSENCIA",
+  ]),
+  origenCheckIn: z.enum(["QR", "ADMIN"]).nullable(),
+  checkInRegistradoPorId: z.number().int().nullable(),
   fechaHoraCheckIn: z.string().nullable().optional().openapi({ example: null }),
   fechaHoraCheckOut: z
     .string()
@@ -178,7 +179,14 @@ export const listarReservasQuerySchema = z.object({
       example: 1,
     }),
   estado: z
-    .enum(["todas", "activas", "canceladas", "finalizadas", "pendientes"])
+    .enum([
+      "todas",
+      "activas",
+      "canceladas",
+      "finalizadas",
+      "pendientes",
+      "liberadas_por_ausencia",
+    ])
     .optional()
     .openapi({
       param: {
@@ -186,7 +194,7 @@ export const listarReservasQuerySchema = z.object({
         in: "query",
       },
       description:
-        "Filtrar por estado de la reserva (activas, canceladas, finalizadas, pendientes, todas)",
+        "Filtrar por estado: activas, canceladas (incluye ausencias), liberadas_por_ausencia, finalizadas, pendientes o todas",
       example: "activas",
     }),
 });

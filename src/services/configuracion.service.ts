@@ -8,27 +8,17 @@ const VALORES_POR_DEFECTO = {
   tiempoMaximoAntelacionDias: 30,
   duracionMinimaMinutos: 30,
   duracionMaximaMinutos: 240,
+  minutosGraciaCheckIn: 15,
 };
 
 export class ConfiguracionBusinessError extends Error {}
 
 export async function obtenerConfiguracion() {
-  let config = await prisma.configuracion.findUnique({
+  const config = await prisma.configuracion.upsert({
     where: { id: 1 },
+    create: VALORES_POR_DEFECTO,
+    update: {},
   });
-
-  if (!config) {
-    try {
-      config = await prisma.configuracion.create({
-        data: VALORES_POR_DEFECTO,
-      });
-    } catch {
-      config = {
-        ...VALORES_POR_DEFECTO,
-        actualizadoEn: new Date(),
-      };
-    }
-  }
 
   return {
     id: config.id,
@@ -37,6 +27,7 @@ export async function obtenerConfiguracion() {
     tiempoMaximoAntelacionDias: config.tiempoMaximoAntelacionDias,
     duracionMinimaMinutos: config.duracionMinimaMinutos,
     duracionMaximaMinutos: config.duracionMaximaMinutos,
+    minutosGraciaCheckIn: config.minutosGraciaCheckIn,
     actualizadoEn: config.actualizadoEn.toISOString(),
   };
 }
@@ -67,6 +58,9 @@ export async function actualizarConfiguracion(
   }
 
   const dataUpdate = {
+    ...(input.minutosGraciaCheckIn !== undefined && {
+      minutosGraciaCheckIn: input.minutosGraciaCheckIn,
+    }),
     ...(input.minutosApertura !== undefined && {
       minutosApertura: input.minutosApertura,
     }),
@@ -100,6 +94,7 @@ export async function actualizarConfiguracion(
     tiempoMaximoAntelacionDias: actualizado.tiempoMaximoAntelacionDias,
     duracionMinimaMinutos: actualizado.duracionMinimaMinutos,
     duracionMaximaMinutos: actualizado.duracionMaximaMinutos,
+    minutosGraciaCheckIn: actualizado.minutosGraciaCheckIn,
     actualizadoEn: actualizado.actualizadoEn.toISOString(),
   };
 }
