@@ -7,5 +7,6 @@ model Configuracion {
   tiempoMaximoAntelacionDias Int      @default(30)
   duracionMinimaMinutos      Int      @default(30)
   duracionMaximaMinutos      Int      @default(240)
+  minutosGraciaCheckIn       Int      @default(15)
   actualizadoEn              DateTime @updatedAt
 }

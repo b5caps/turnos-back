@@ -36,6 +36,7 @@ import {
   unauthorizedResponse,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
+import { estadoReserva } from "../lib/reservas-estado.js";
 
 const reservas = new OpenAPIHono();
 
@@ -55,14 +56,16 @@ function mapearReserva(reserva: any) {
     fechaHoraInicio: reserva.fechaHoraInicio.toISOString(),
     fechaHoraFin: reserva.fechaHoraFin.toISOString(),
     fechaLimiteCheckIn: reserva.fechaLimiteCheckIn.toISOString(),
-    fechaHoraConfirmacion:
-      reserva.fechaHoraConfirmacion?.toISOString() ?? null,
-    fechaExpiracionHold:
-      reserva.fechaExpiracionHold?.toISOString() ?? null,
-    confirmada: reserva.confirmada ?? (reserva.fechaHoraConfirmacion !== null),
+    fechaHoraConfirmacion: reserva.fechaHoraConfirmacion?.toISOString() ?? null,
+    fechaExpiracionHold: reserva.fechaExpiracionHold?.toISOString() ?? null,
+    confirmada: reserva.confirmada ?? reserva.fechaHoraConfirmacion !== null,
     esPendiente: reserva.esPendiente ?? false,
     fechaHoraCancelacion: reserva.fechaHoraCancelacion?.toISOString() ?? null,
     motivoCancelacion: reserva.motivoCancelacion ?? null,
+    tipoCancelacion: reserva.tipoCancelacion ?? null,
+    estado: estadoReserva(reserva),
+    origenCheckIn: reserva.origenCheckIn ?? null,
+    checkInRegistradoPorId: reserva.checkInRegistradoPorId ?? null,
     fechaHoraCheckIn: reserva.fechaHoraCheckIn?.toISOString() ?? null,
     fechaHoraCheckOut: reserva.fechaHoraCheckOut?.toISOString() ?? null,
     observacion: reserva.observacion ?? null,
@@ -132,13 +135,18 @@ const crearReservaRoute = createRoute({
           schema: reservaResponseSchema,
         },
       },
-      description: "Reserva iniciada exitosamente (en reserva pendiente o confirmada)",
+      description:
+        "Reserva iniciada exitosamente (en reserva pendiente o confirmada)",
     },
     400: errorResponse("Solicitud inválida o recursos no disponibles"),
     401: unauthorizedResponse,
-    403: errorResponse("No autorizado para reservar en nombre de otro usuario o confirmar de inmediato"),
+    403: errorResponse(
+      "No autorizado para reservar en nombre de otro usuario o confirmar de inmediato",
+    ),
     404: errorResponse("Usuario o recurso especificado no encontrado"),
-    409: errorResponse("Uno o más recursos ya se encuentran reservados o bloqueados en ese horario"),
+    409: errorResponse(
+      "Uno o más recursos ya se encuentran reservados o bloqueados en ese horario",
+    ),
   },
 });
 
@@ -161,9 +169,13 @@ const confirmarReservaRoute = createRoute({
       description: "Reserva confirmada exitosamente",
     },
     401: unauthorizedResponse,
-    403: errorResponse("No tienes permisos para confirmar esta reserva pendiente"),
+    403: errorResponse(
+      "No tienes permisos para confirmar esta reserva pendiente",
+    ),
     404: errorResponse("Reserva pendiente no encontrada"),
-    409: errorResponse("El tiempo para confirmar ha expirado o el recurso no está disponible"),
+    409: errorResponse(
+      "El tiempo para confirmar ha expirado o el recurso no está disponible",
+    ),
   },
 });
 
@@ -258,7 +270,10 @@ reservas.openapi(crearReservaRoute, async (c) => {
 
     if (body.confirmarInmediato && usuarioAuth.rol !== "ADMIN") {
       return c.json(
-        { message: "Solo los administradores pueden confirmar inmediatamente una reserva al crearla" },
+        {
+          message:
+            "Solo los administradores pueden confirmar inmediatamente una reserva al crearla",
+        },
         403,
       );
     }
@@ -286,7 +301,8 @@ reservas.openapi(crearReservaRoute, async (c) => {
 
     // Si es una ReservaPendiente (Hold temporal de 10 minutos):
     const expiracionHold = new Date(
-      resultado.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+      resultado.fechaHoraSolicitud.getTime() +
+        DURACION_HOLD_MINUTOS * 60 * 1000,
     );
     return c.json(
       {
@@ -303,6 +319,10 @@ reservas.openapi(crearReservaRoute, async (c) => {
           esPendiente: true,
           fechaHoraCancelacion: null,
           motivoCancelacion: null,
+          tipoCancelacion: null,
+          estado: "PENDIENTE" as const,
+          origenCheckIn: null,
+          checkInRegistradoPorId: null,
           fechaHoraCheckIn: null,
           fechaHoraCheckOut: null,
           observacion: body.observacion ?? null,
@@ -313,7 +333,9 @@ reservas.openapi(crearReservaRoute, async (c) => {
               nombre: rr.recurso.nombre,
               capacidad: rr.recurso.capacidad,
               activo: rr.recurso.activo ?? true,
-              sala: rr.recurso.sala ? { ubicacion: rr.recurso.sala.ubicacion } : null,
+              sala: rr.recurso.sala
+                ? { ubicacion: rr.recurso.sala.ubicacion }
+                : null,
               notebook: rr.recurso.notebook
                 ? {
                     marca: rr.recurso.notebook.marca,
