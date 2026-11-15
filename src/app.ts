@@ -1,0 +1,40 @@
+import "dotenv/config";
+import { cors } from "hono/cors";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { swaggerUI } from "@hono/swagger-ui";
+import recursosRoutes from "./routes/recursos.routes.js";
+import reservasRoutes from "./routes/reservas.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+import espaciosRoutes from "./routes/espacios.routes.js";
+import configuracionRoutes from "./routes/configuracion.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+import bloqueosRoutes from "./routes/bloqueos.routes.js";
+
+export const app = new OpenAPIHono();
+
+app.use("/*", cors());
+app.get("/", (c) => {
+  return c.text("Hello Hono!");
+});
+
+app.route("/api/recursos", recursosRoutes);
+app.route("/api/reservas", reservasRoutes);
+app.route("/api/auth", authRoutes);
+app.route("/api/espacios", espaciosRoutes);
+app.route("/api/espacios", bloqueosRoutes);
+app.route("/api/configuracion", configuracionRoutes);
+app.route("/api/dashboard", dashboardRoutes);
+
+app.openAPIRegistry.registerComponent("securitySchemes", "Bearer", {
+  type: "http",
+  scheme: "bearer",
+  bearerFormat: "JWT",
+  description: "Token JWT obtenido de /api/auth/login",
+});
+
+app.doc("/doc", {
+  openapi: "3.0.0",
+  info: { version: "1.0.0", title: "GREB/SIREB API" },
+});
+
+app.get("/docs", swaggerUI({ url: "/doc" }));

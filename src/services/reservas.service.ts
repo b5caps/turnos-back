@@ -455,6 +455,18 @@ export async function confirmarReserva(
   usuarioAuth: TokenPayload,
 ) {
   return prisma.$transaction(async (tx) => {
+    const referencia = await tx.reservaPendiente.findUnique({
+      where: { id: reservaPendienteId },
+      select: { recursos: { select: { recursoId: true } } },
+    });
+    if (!referencia)
+      throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+    await bloquearRecursos(
+      tx,
+      referencia.recursos.map((r) => r.recursoId),
+    );
+
+    // Releer después de adquirir los locks: otra confirmación pudo consumir el hold.
     const pendiente = await tx.reservaPendiente.findUnique({
       where: { id: reservaPendienteId },
       include: {
@@ -478,9 +490,10 @@ export async function confirmarReserva(
 
     const ahora = new Date();
     const expiracion = new Date(
-      pendiente.fechaHoraSolicitud.getTime() + DURACION_HOLD_MINUTOS * 60 * 1000,
+      pendiente.fechaHoraSolicitud.getTime() +
+        DURACION_HOLD_MINUTOS * 60 * 1000,
     );
-    if (ahora > expiracion) {
+    if (ahora >= expiracion) {
       await tx.reservaPendienteRecurso.deleteMany({
         where: { reservaPendienteId: pendiente.id },
       });
@@ -497,16 +510,19 @@ export async function confirmarReserva(
       pendiente.fechaHoraDeseadaFin,
     );
 
-    const recursoIds = pendiente.recursos
-      .map((r) => r.recursoId)
-      .sort((a, b) => a - b);
-    if (recursoIds.length > 0) {
-      await tx.$queryRaw`
-        SELECT id FROM "Recurso"
-        WHERE id IN (${Prisma.join(recursoIds)})
-        FOR UPDATE
-      `;
-    }
+    const bloqueo = await tx.bloqueo.findFirst({
+      where: {
+        recursoId: { in: pendiente.recursos.map((r) => r.recursoId) },
+        ...bloqueosSolapados(
+          pendiente.fechaHoraDeseadaInicio,
+          pendiente.fechaHoraDeseadaFin,
+        ),
+      },
+    });
+    if (bloqueo)
+      throw new ReservaConflictError(
+        "El horario se encuentra bloqueado por administración. No se puede confirmar la reserva pendiente.",
+      );
 
     const reservaConfirmada = await tx.reserva.create({
       data: {
@@ -620,8 +636,7 @@ export async function obtenerAsignacionesNotebooks(
         activo: (nb as unknown as { activo?: boolean }).activo ?? true,
       },
       estado: (asignacion ? "ASIGNADA" : "DISPONIBLE") as
-        | "ASIGNADA"
-        | "DISPONIBLE",
+        "ASIGNADA" | "DISPONIBLE",
       asignacion: asignacion
         ? {
             reservaId: asignacion.reserva.id,
