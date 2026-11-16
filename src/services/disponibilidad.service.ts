@@ -130,25 +130,8 @@ async function consultarDisponibilidadPorTipo(
 
   const config = await obtenerConfiguracion();
 
-  // Horarios de apertura y cierre del establecimiento para el día consultado
-  const disponibilidadesDia = await prisma.disponibilidad.findMany({
-    where: {
-      diaSemana,
-      recurso: {
-        activo: true,
-      },
-    },
-  });
-
-  let minutosApertura = config.minutosApertura;
-  let minutosCierre = config.minutosCierre;
-
-  if (disponibilidadesDia.length > 0) {
-    minutosApertura = Math.min(
-      ...disponibilidadesDia.map((d) => d.minutosInicio),
-    );
-    minutosCierre = Math.max(...disponibilidadesDia.map((d) => d.minutosFin));
-  }
+  const minutosApertura = config.minutosApertura;
+  const minutosCierre = config.minutosCierre;
 
   const horarioEstablecimiento = {
     minutosApertura,
@@ -159,6 +142,12 @@ async function consultarDisponibilidadPorTipo(
     fechaConsultada.getTime() + minutosApertura * 60000,
   );
   const finDia = new Date(fechaConsultada.getTime() + minutosCierre * 60000);
+  const limiteHold = new Date(
+    reloj.ahora().getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+  );
+
+  const incluirSala = input.tipo !== "NOTEBOOK";
+  const incluirNotebook = input.tipo !== "SALA";
 
   const recursos = await prisma.recurso.findMany({
     where: {
@@ -168,8 +157,8 @@ async function consultarDisponibilidadPorTipo(
         : {}),
     },
     include: {
-      sala: true,
-      notebook: true,
+      ...(incluirSala ? { sala: true } : {}),
+      ...(incluirNotebook ? { notebook: true } : {}),
       disponibilidades: {
         where: {
           diaSemana,
@@ -177,6 +166,10 @@ async function consultarDisponibilidadPorTipo(
       },
       bloqueos: {
         where: bloqueosSolapados(inicioDia, finDia),
+        select: {
+          fechaHoraInicio: true,
+          fechaHoraFin: true,
+        },
       },
       reservas: {
         where: {
@@ -190,24 +183,35 @@ async function consultarDisponibilidadPorTipo(
             ],
           },
         },
-        include: {
-          reserva: true,
+        select: {
+          reserva: {
+            select: {
+              fechaHoraInicio: true,
+              fechaHoraFin: true,
+              fechaHoraCheckOut: true,
+              fechaHoraCancelacion: true,
+            },
+          },
         },
       },
       reservasPendientes: {
         where: {
           reservaPendiente: {
             fechaHoraSolicitud: {
-              gt: new Date(
-                reloj.ahora().getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
-              ),
+              gt: limiteHold,
             },
             fechaHoraDeseadaInicio: { lt: finDia },
             fechaHoraDeseadaFin: { gt: inicioDia },
           },
         },
-        include: {
-          reservaPendiente: true,
+        select: {
+          reservaPendiente: {
+            select: {
+              fechaHoraSolicitud: true,
+              fechaHoraDeseadaInicio: true,
+              fechaHoraDeseadaFin: true,
+            },
+          },
         },
       },
     },
@@ -233,10 +237,6 @@ async function consultarDisponibilidadPorTipo(
     minActual = minSiguiente;
   }
 
-  const ahora = reloj.ahora();
-  const limiteHold = new Date(
-    ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
-  );
 
   const recursosMapeados = recursos.map((recurso) => {
     // Reservas activas dentro del horario del día consultado
@@ -324,13 +324,16 @@ async function consultarDisponibilidadPorTipo(
       },
     );
 
-    const datosEspecificos = recurso.sala
-      ? { ubicacion: recurso.sala.ubicacion }
-      : recurso.notebook
+    const salaRecurso = "sala" in recurso ? recurso.sala : null;
+    const notebookRecurso = "notebook" in recurso ? recurso.notebook : null;
+
+    const datosEspecificos = salaRecurso
+      ? { ubicacion: salaRecurso.ubicacion }
+      : notebookRecurso
         ? {
-            numeroSerie: recurso.notebook.numeroSerie,
-            marca: recurso.notebook.marca,
-            modelo: recurso.notebook.modelo,
+            numeroSerie: notebookRecurso.numeroSerie,
+            marca: notebookRecurso.marca,
+            modelo: notebookRecurso.modelo,
           }
         : {};
 
@@ -376,6 +379,11 @@ export async function crearReserva(
     throw new DisponibilidadError(
       "La reserva debe comenzar y finalizar en el mismo día del establecimiento",
     );
+  }
+
+  const ahora = reloj.ahora();
+  if (inicio.getTime() < ahora.getTime() - 60 * 1000) {
+    throw new DisponibilidadError("No se pueden reservar horarios pasados");
   }
 
   // Validaciones según configuración del establecimiento
@@ -485,7 +493,7 @@ export async function crearReserva(
     );
   }
 
-  const ahora = reloj.ahora();
+
   const limiteHold = new Date(
     ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
   );
@@ -562,14 +570,18 @@ export async function crearReserva(
           : minutosDelEstablecimiento(fin);
 
       for (const recurso of recursos) {
-        // Validar horario del recurso para ese día
+        // Validar horario del establecimiento y del recurso para ese día
+        const dentroHorarioGlobal =
+          minutosInicioReq >= config.minutosApertura &&
+          minutosFinReq <= config.minutosCierre;
         const dentroDeHorario =
-          recurso.disponibilidades.length === 0 ||
-          recurso.disponibilidades.some(
-            (disp) =>
-              minutosInicioReq >= disp.minutosInicio &&
-              minutosFinReq <= disp.minutosFin,
-          );
+          dentroHorarioGlobal &&
+          (recurso.disponibilidades.length === 0 ||
+            recurso.disponibilidades.some(
+              (disp) =>
+                minutosInicioReq >= disp.minutosInicio &&
+                minutosFinReq <= disp.minutosFin,
+            ));
 
         if (!dentroDeHorario) {
           throw new DisponibilidadError(

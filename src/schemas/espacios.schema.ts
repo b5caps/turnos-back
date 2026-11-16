@@ -185,6 +185,14 @@ export const actualizarEspacioSchema = z.object({
     }),
 });
 
+export const cambioEspacioSchema = z.object({
+  accion: z.enum(["CREACION", "ACTUALIZACION", "DESACTIVACION", "ELIMINACION"]),
+  actorId: z.number().int(),
+  actorRol: z.enum(["ADMIN", "UTN", "EXTERNO"]),
+  fechaHora: z.string(),
+  detalle: z.string().nullable(),
+});
+
 export const espacioDetalleSchema = z.object({
   id: z.number().int().openapi({ example: 1 }),
   nombre: z.string().openapi({ example: "Aula Magna" }),
@@ -195,6 +203,8 @@ export const espacioDetalleSchema = z.object({
   activo: z.boolean().openapi({ example: true }),
   ubicacion: z.string().openapi({ example: "Pabellón Central - Piso 2" }),
   disponibilidades: z.array(disponibilidadEspacioDetalleSchema),
+  modificadoPorId: z.number().int().nullable().optional(),
+  historialCambios: z.array(cambioEspacioSchema).optional(),
 });
 
 export const listarEspaciosResponseSchema = z.object({

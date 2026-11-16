@@ -20,8 +20,9 @@ import {
   listarEspacios,
   obtenerEspacioPorId,
 } from "../services/espacios.service.js";
+import { validationHook } from "../lib/validation.js";
 
-const espacios = new OpenAPIHono();
+const espacios = new OpenAPIHono({ defaultHook: validationHook });
 
 // GET / - Listar espacios
 const listarEspaciosRoute = createRoute({
@@ -47,6 +48,14 @@ const listarEspaciosRoute = createRoute({
     401: {
       content: { "application/json": { schema: errorSchema } },
       description: "No autenticado",
+    },
+    403: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Acceso denegado: se requieren permisos de administrador",
+    },
+    409: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Ya existe un espacio con ese nombre",
     },
   },
 });
@@ -74,9 +83,17 @@ const obtenerEspacioRoute = createRoute({
       content: { "application/json": { schema: errorSchema } },
       description: "No autenticado",
     },
+    403: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Acceso denegado: se requieren permisos de administrador",
+    },
     404: {
       content: { "application/json": { schema: errorSchema } },
       description: "Espacio no encontrado",
+    },
+    409: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Conflicto de nombre duplicado o reservas vigentes",
     },
   },
 });
@@ -117,6 +134,10 @@ const crearEspacioRoute = createRoute({
     403: {
       content: { "application/json": { schema: errorSchema } },
       description: "Acceso denegado: se requieren permisos de administrador",
+    },
+    409: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Ya existe un espacio con ese nombre",
     },
   },
 });
@@ -160,6 +181,10 @@ const actualizarEspacioRoute = createRoute({
     404: {
       content: { "application/json": { schema: errorSchema } },
       description: "Espacio no encontrado",
+    },
+    409: {
+      content: { "application/json": { schema: errorSchema } },
+      description: "Conflicto de nombre duplicado o reservas vigentes",
     },
   },
 });
@@ -208,6 +233,14 @@ espacios.use("*", requireAuth);
 
 // Handlers
 espacios.openapi(listarEspaciosRoute, async (c) => {
+  const usuarioAuth = c.get("usuario");
+  if (usuarioAuth.rol !== "ADMIN") {
+    return c.json(
+      { message: "Acceso denegado: se requieren permisos de administrador" },
+      403,
+    );
+  }
+
   const query = c.req.valid("query");
   const lista = await listarEspacios(query);
   return c.json({ data: lista }, 200);
@@ -215,6 +248,14 @@ espacios.openapi(listarEspaciosRoute, async (c) => {
 
 espacios.openapi(obtenerEspacioRoute, async (c) => {
   try {
+    const usuarioAuth = c.get("usuario");
+    if (usuarioAuth.rol !== "ADMIN") {
+      return c.json(
+        { message: "Acceso denegado: se requieren permisos de administrador" },
+        403,
+      );
+    }
+
     const { id } = c.req.valid("param");
     const data = await obtenerEspacioPorId(id);
     return c.json({ data }, 200);
@@ -237,9 +278,12 @@ espacios.openapi(crearEspacioRoute, async (c) => {
     }
 
     const body = c.req.valid("json");
-    const data = await crearEspacio(body);
+    const data = await crearEspacio(body, usuarioAuth);
     return c.json({ data }, 201);
   } catch (error) {
+    if (error instanceof EspacioConflictError) {
+      return c.json({ message: error.message }, 409);
+    }
     if (error instanceof EspacioBusinessError) {
       return c.json({ message: error.message }, 400);
     }
@@ -259,11 +303,14 @@ espacios.openapi(actualizarEspacioRoute, async (c) => {
 
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
-    const data = await actualizarEspacio(id, body);
+    const data = await actualizarEspacio(id, body, usuarioAuth);
     return c.json({ data }, 200);
   } catch (error) {
     if (error instanceof EspacioNotFoundError) {
       return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof EspacioConflictError) {
+      return c.json({ message: error.message }, 409);
     }
     if (error instanceof EspacioBusinessError) {
       return c.json({ message: error.message }, 400);
@@ -283,7 +330,7 @@ espacios.openapi(eliminarEspacioRoute, async (c) => {
     }
 
     const { id } = c.req.valid("param");
-    const resultado = await eliminarODesactivarEspacio(id);
+    const resultado = await eliminarODesactivarEspacio(id, usuarioAuth);
     return c.json(resultado, 200);
   } catch (error) {
     if (error instanceof EspacioNotFoundError) {

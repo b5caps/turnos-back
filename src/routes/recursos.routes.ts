@@ -14,18 +14,24 @@ import {
   notebookAsignacionesResponseSchema,
 } from "../schemas/reservas.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
+import { esFechaRealValida, validationHook } from "../lib/validation.js";
 
-const recursos = new OpenAPIHono();
+const recursos = new OpenAPIHono({ defaultHook: validationHook });
+
+const fechaConsultaSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Formato YYYY-MM-DD requerido")
+  .refine(esFechaRealValida, "La fecha ingresada no es una fecha de calendario válida");
 
 const querySchema = z.object({
-  fecha: z.iso.date("Formato YYYY-MM-DD requerido").openapi({
+  fecha: fechaConsultaSchema.openapi({
     example: "2026-09-05",
     description: "Fecha a consultar (YYYY-MM-DD)",
   }),
 });
 
 const notebooksQuerySchema = z.object({
-  fecha: z.iso.date("Formato YYYY-MM-DD requerido").openapi({
+  fecha: fechaConsultaSchema.openapi({
     example: "2026-09-05",
     description: "Fecha a consultar (YYYY-MM-DD)",
   }),

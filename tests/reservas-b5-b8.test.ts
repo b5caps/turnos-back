@@ -152,19 +152,22 @@ describe("B7: Expiración de hold fuera del rollback", () => {
       }),
     });
 
+    const mockConfig = {
+      id: 1,
+      minutosApertura: 480,
+      minutosCierre: 1320,
+      duracionMinimaMinutos: 30,
+      duracionMaximaMinutos: 240,
+      tiempoMaximoAntelacionDias: 30,
+      minutosGraciaCheckIn: 15,
+      actualizadoEn: new Date("2026-12-01T00:00:00.000Z"),
+    };
+
     Object.defineProperty(prisma, "configuracion", {
       configurable: true,
       get: () => ({
-        upsert: async () => ({
-          id: 1,
-          minutosApertura: 480,
-          minutosCierre: 1320,
-          duracionMinimaMinutos: 30,
-          duracionMaximaMinutos: 240,
-          tiempoMaximoAntelacionDias: 30,
-          minutosGraciaCheckIn: 15,
-          actualizadoEn: new Date("2026-12-01T00:00:00.000Z"),
-        }),
+        findUnique: async () => mockConfig,
+        upsert: async () => mockConfig,
       }),
     });
 
