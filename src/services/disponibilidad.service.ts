@@ -1,8 +1,13 @@
+import type { Rol } from "@prisma/client";
 import {
   ReservaConflictError,
   ReservaNotFoundError,
 } from "./reservas.service.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
+import {
+  obtenerAuditoriaReserva,
+  registrarEventoReserva,
+} from "./auditoria.service.js";
 import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
 import {
@@ -349,7 +354,10 @@ async function consultarDisponibilidadPorTipo(
   };
 }
 
-export async function crearReserva(input: CrearReservaInput) {
+export async function crearReserva(
+  input: CrearReservaInput,
+  actor?: { id: number; rol: Rol },
+) {
   const inicio = new Date(input.fechaHoraInicio);
   const fin = new Date(input.fechaHoraFin);
 
@@ -588,9 +596,12 @@ export async function crearReserva(input: CrearReservaInput) {
 
       // 3. Si es ADMIN y solicitó confirmación inmediata: Crear directamente la Reserva
       if (input.confirmarInmediato) {
-        return tx.reserva.create({
+        const actorId = actor?.id ?? input.usuarioId;
+        const actorRol: Rol = actor?.rol ?? "ADMIN";
+        const creada = await tx.reserva.create({
           data: {
             usuarioId: input.usuarioId,
+            creadoPorId: actorId,
             fechaHoraInicio: inicio,
             fechaHoraFin: fin,
             fechaLimiteCheckIn,
@@ -626,6 +637,26 @@ export async function crearReserva(input: CrearReservaInput) {
             },
           },
         });
+
+        await registrarEventoReserva(tx, {
+          reservaId: creada.id,
+          accion: "CREACION",
+          actorId,
+          actorRol,
+          fechaHora: ahora,
+        });
+
+        const auditoria = await obtenerAuditoriaReserva(
+          creada.id,
+          {
+            titularId: creada.usuarioId,
+            creadoPorId: creada.creadoPorId,
+            canceladoPorId: creada.canceladoPorId,
+          },
+          tx,
+        );
+
+        return { ...creada, ...auditoria };
       }
 
       // 4. Usuario común (o admin sin confirmación inmediata): Crear ReservaPendiente (Hold de 10 min)

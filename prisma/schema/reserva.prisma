@@ -9,28 +9,55 @@ enum OrigenCheckIn {
   ADMIN
 }
 
+enum AccionAuditoria {
+  CREACION
+  CONFIRMACION
+  EDICION
+  CANCELACION
+  FINALIZACION
+}
+
 model Reserva {
-  id                    Int              @id @default(autoincrement())
-  usuarioId             Int
-  usuario               Usuario          @relation(fields: [usuarioId], references: [id])
-  fechaHoraInicio       DateTime
-  fechaHoraFin          DateTime
-  fechaLimiteCheckIn    DateTime
-  controlAsistencia    Boolean @default(true)
-  fechaHoraConfirmacion DateTime?
-  fechaHoraCancelacion  DateTime?
-  motivoCancelacion     String?
-  tipoCancelacion       TipoCancelacion?
-  fechaHoraCheckIn      DateTime?
-  origenCheckIn         OrigenCheckIn?
+  id                     Int              @id @default(autoincrement())
+  usuarioId              Int
+  usuario                Usuario          @relation(fields: [usuarioId], references: [id])
+  creadoPorId            Int?
+  creadoPor              Usuario?         @relation("ReservaCreadaPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+  canceladoPorId         Int?
+  canceladoPor           Usuario?         @relation("ReservaCanceladaPor", fields: [canceladoPorId], references: [id], onDelete: SetNull)
+  fechaHoraInicio        DateTime
+  fechaHoraFin           DateTime
+  fechaLimiteCheckIn     DateTime
+  controlAsistencia      Boolean @default(true)
+  fechaHoraConfirmacion  DateTime?
+  fechaHoraCancelacion   DateTime?
+  motivoCancelacion      String?
+  tipoCancelacion        TipoCancelacion?
+  fechaHoraCheckIn       DateTime?
+  origenCheckIn          OrigenCheckIn?
   checkInRegistradoPorId Int?
   checkInRegistradoPor   Usuario? @relation("CheckInRegistradoPor", fields: [checkInRegistradoPorId], references: [id], onDelete: SetNull)
-  fechaHoraCheckOut     DateTime?
-  fechaCreacion         DateTime         @default(now())
-  observacion           String?
-  recursos              ReservaRecurso[]
+  fechaHoraCheckOut      DateTime?
+  fechaCreacion          DateTime         @default(now())
+  observacion            String?
+  recursos               ReservaRecurso[]
+  bitacora               ReservaBitacora[]
 
   @@index([fechaLimiteCheckIn])
+}
+
+model ReservaBitacora {
+  id        Int             @id @default(autoincrement())
+  reservaId Int
+  reserva   Reserva         @relation(fields: [reservaId], references: [id], onDelete: Cascade)
+  accion    AccionAuditoria
+  actorId   Int?
+  actor     Usuario?        @relation("EventosBitacora", fields: [actorId], references: [id], onDelete: SetNull)
+  actorRol  Rol
+  fechaHora DateTime        @default(now())
+  detalle   String?
+
+  @@index([reservaId, fechaHora, id])
 }
 
 model ReservaPendiente {

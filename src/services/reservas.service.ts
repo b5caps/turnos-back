@@ -174,11 +174,49 @@ export async function listarReservas(
 
   return reservas.map((r) => ({
     ...r,
-    ...construirResumenAuditoria(auditoriaMap.get(r.id) ?? [], r.usuarioId),
+    ...construirResumenAuditoria(auditoriaMap.get(r.id) ?? [], {
+      titularId: r.usuarioId,
+      creadoPorId: r.creadoPorId,
+      canceladoPorId: r.canceladoPorId,
+    }),
     fechaExpiracionHold: null as Date | null,
     confirmada: r.fechaHoraConfirmacion !== null,
     esPendiente: false,
   }));
+}
+
+export async function obtenerReservaPorId(
+  id: number,
+  usuarioAuth: TokenPayload,
+) {
+  const reserva = await prisma.reserva.findUnique({
+    where: { id },
+    include: includeRecursosCompletos,
+  });
+
+  if (!reserva) {
+    throw new ReservaNotFoundError("Reserva no encontrada");
+  }
+
+  if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+    throw new ReservaForbiddenError(
+      "No tienes permisos para consultar esta reserva",
+    );
+  }
+
+  const auditoria = await obtenerAuditoriaReserva(id, {
+    titularId: reserva.usuarioId,
+    creadoPorId: reserva.creadoPorId,
+    canceladoPorId: reserva.canceladoPorId,
+  });
+
+  return {
+    ...reserva,
+    ...auditoria,
+    fechaExpiracionHold: null as Date | null,
+    confirmada: reserva.fechaHoraConfirmacion !== null,
+    esPendiente: false,
+  };
 }
 
 export async function resolverTitularReserva(
@@ -215,7 +253,7 @@ export async function editarReserva(
   input: EditarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const reservaActualizada = await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
       await bloquearReserva(tx, id, input.notebookId ? [input.notebookId] : []);
       const reserva = await tx.reserva.findUnique({
@@ -347,27 +385,34 @@ export async function editarReserva(
         dataUpdate.observacion = input.observacion?.trim() || null;
       }
 
-      return tx.reserva.update({
+      const reservaActualizada = await tx.reserva.update({
         where: { id },
         data: dataUpdate,
         include: includeRecursosCompletos,
       });
+
+      await registrarEventoReserva(tx, {
+        reservaId: id,
+        accion: "EDICION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        fechaHora: ahora,
+      });
+
+      const auditoria = await obtenerAuditoriaReserva(
+        id,
+        {
+          titularId: reservaActualizada.usuarioId,
+          creadoPorId: reservaActualizada.creadoPorId,
+          canceladoPorId: reservaActualizada.canceladoPorId,
+        },
+        tx,
+      );
+
+      return { ...reservaActualizada, ...auditoria };
     },
     { maxWait: 10000, timeout: 15000 },
   );
-
-  await registrarEventoReserva({
-    reservaId: id,
-    accion: "EDICION",
-    actorId: usuarioAuth.id,
-    actorRol: usuarioAuth.rol,
-  });
-
-  const auditoria = await obtenerAuditoriaReserva(
-    id,
-    reservaActualizada.usuarioId,
-  );
-  return { ...reservaActualizada, ...auditoria };
 }
 
 export async function cancelarReserva(
@@ -375,91 +420,15 @@ export async function cancelarReserva(
   input: CancelarReservaInput | undefined,
   usuarioAuth: TokenPayload,
 ) {
-  const resultadoTx = await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     await bloquearReserva(tx, id);
     const reserva = await tx.reserva.findUnique({
       where: { id },
       include: includeRecursosCompletos,
     });
 
-    const ahora = reloj.ahora();
-
     if (!reserva) {
-      const pendiente = await tx.reservaPendiente.findUnique({
-        where: { id },
-        include: {
-          recursos: {
-            include: {
-              recurso: {
-                include: {
-                  sala: true,
-                  notebook: true,
-                },
-              },
-            },
-          },
-          usuario: {
-            select: {
-              id: true,
-              nombre: true,
-              apellido: true,
-              email: true,
-              perfilUTN: {
-                select: {
-                  legajo: true,
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (!pendiente) {
-        throw new ReservaNotFoundError("Reserva no encontrada");
-      }
-
-      if (
-        usuarioAuth.rol !== "ADMIN" &&
-        pendiente.usuarioId !== usuarioAuth.id
-      ) {
-        throw new ReservaForbiddenError(
-          "No tienes permisos para cancelar esta reserva",
-        );
-      }
-
-      await tx.reservaPendienteRecurso.deleteMany({
-        where: { reservaPendienteId: pendiente.id },
-      });
-      await tx.reservaPendiente.deleteMany({
-        where: { id: pendiente.id },
-      });
-
-      return {
-        esHoldLiberado: true as const,
-        payload: {
-          id: pendiente.id,
-          usuarioId: pendiente.usuarioId,
-          usuario: pendiente.usuario,
-          fechaHoraInicio: pendiente.fechaHoraDeseadaInicio,
-          fechaHoraFin: pendiente.fechaHoraDeseadaFin,
-          fechaLimiteCheckIn: pendiente.fechaHoraDeseadaInicio,
-          fechaHoraConfirmacion: null,
-          fechaHoraCancelacion: ahora,
-          fechaHoraCheckIn: null,
-          fechaHoraCheckOut: null,
-          motivoCancelacion:
-            input?.motivoCancelacion?.trim() || "Hold liberado",
-          observacion: null,
-          fechaExpiracionHold: null,
-          confirmada: false,
-          esPendiente: true,
-          creadoPorId: pendiente.usuarioId,
-          canceladoPorId: usuarioAuth.id,
-          canceladoPorRol: usuarioAuth.rol,
-          bitacora: [],
-          recursos: pendiente.recursos,
-        },
-      };
+      throw new ReservaNotFoundError("Reserva no encontrada");
     }
 
     if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
@@ -478,6 +447,7 @@ export async function cancelarReserva(
       );
     }
 
+    const ahora = reloj.ahora();
     if (reserva.fechaHoraCheckOut !== null || reserva.fechaHoraFin <= ahora) {
       throw new ReservaBusinessError(
         "No se puede cancelar una reserva cuya fecha de fin ya ha transcurrido",
@@ -494,6 +464,7 @@ export async function cancelarReserva(
       data: {
         fechaHoraCancelacion: ahora,
         motivoCancelacion: motivo,
+        canceladoPorId: usuarioAuth.id,
         tipoCancelacion:
           usuarioAuth.rol === "ADMIN" ? "ADMINISTRADOR" : "USUARIO",
       },
@@ -503,37 +474,32 @@ export async function cancelarReserva(
       throw new ReservaConflictError("La reserva ya se encuentra cancelada");
     }
 
+    await registrarEventoReserva(tx, {
+      reservaId: id,
+      accion: "CANCELACION",
+      actorId: usuarioAuth.id,
+      actorRol: usuarioAuth.rol,
+      fechaHora: ahora,
+      detalle: motivo,
+    });
+
     const reservaActualizada = await tx.reserva.findUniqueOrThrow({
       where: { id },
       include: includeRecursosCompletos,
     });
 
-    return {
-      esHoldLiberado: false as const,
-      reservaActualizada,
-      ahora,
-      motivo,
-    };
+    const auditoria = await obtenerAuditoriaReserva(
+      id,
+      {
+        titularId: reservaActualizada.usuarioId,
+        creadoPorId: reservaActualizada.creadoPorId,
+        canceladoPorId: reservaActualizada.canceladoPorId,
+      },
+      tx,
+    );
+
+    return { ...reservaActualizada, ...auditoria };
   });
-
-  if (resultadoTx.esHoldLiberado) {
-    return resultadoTx.payload;
-  }
-
-  await registrarEventoReserva({
-    reservaId: id,
-    accion: "CANCELACION",
-    actorId: usuarioAuth.id,
-    actorRol: usuarioAuth.rol,
-    fechaHora: resultadoTx.ahora,
-    detalle: resultadoTx.motivo,
-  });
-
-  const auditoria = await obtenerAuditoriaReserva(
-    id,
-    resultadoTx.reservaActualizada.usuarioId,
-  );
-  return { ...resultadoTx.reservaActualizada, ...auditoria };
 }
 
 export async function finalizarReserva(
@@ -541,86 +507,89 @@ export async function finalizarReserva(
   input: FinalizarReservaInput,
   usuarioAuth: TokenPayload,
 ) {
-  const { reservaActualizada, ahora, observacionLimpia } =
-    await prisma.$transaction(async (tx) => {
-      await bloquearReserva(tx, id);
-      const reserva = await tx.reserva.findUnique({
-        where: { id },
-      });
-
-      if (!reserva) {
-        throw new ReservaNotFoundError("Reserva no encontrada");
-      }
-
-      if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
-        throw new ReservaForbiddenError(
-          "No tienes permisos para finalizar esta reserva",
-        );
-      }
-
-      if (reserva.fechaHoraCancelacion !== null) {
-        throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-      }
-
-      if (reserva.fechaHoraCheckOut !== null) {
-        throw new ReservaConflictError("La reserva ya se encuentra finalizada");
-      }
-
-      if (reserva.fechaHoraCheckIn === null) {
-        throw new ReservaBusinessError(
-          "No se puede finalizar una reserva que no ha realizado check-in",
-        );
-      }
-
-      const ahora = reloj.ahora();
-      if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
-        throw new ReservaBusinessError(
-          "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
-        );
-      }
-
-      const observacionLimpia = input?.observacion?.trim() || null;
-      const resultado = await tx.reserva.updateMany({
-        where: {
-          id,
-          fechaHoraCancelacion: null,
-          fechaHoraCheckOut: null,
-          fechaHoraCheckIn: { not: null },
-        },
-        data: {
-          fechaHoraCheckOut: ahora,
-          ...(observacionLimpia ? { observacion: observacionLimpia } : {}),
-        },
-      });
-
-      if (resultado.count === 0) {
-        throw new ReservaConflictError(
-          "La reserva ya se encuentra finalizada o cancelada",
-        );
-      }
-
-      const reservaActualizada = await tx.reserva.findUniqueOrThrow({
-        where: { id },
-        include: includeRecursosCompletos,
-      });
-
-      return { reservaActualizada, ahora, observacionLimpia };
+  return prisma.$transaction(async (tx) => {
+    await bloquearReserva(tx, id);
+    const reserva = await tx.reserva.findUnique({
+      where: { id },
     });
 
-  await registrarEventoReserva({
-    reservaId: id,
-    accion: "FINALIZACION",
-    actorId: usuarioAuth.id,
-    actorRol: usuarioAuth.rol,
-    fechaHora: ahora,
-    detalle: observacionLimpia,
-  });
+    if (!reserva) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
 
-  const auditoria = await obtenerAuditoriaReserva(
-    id,
-    reservaActualizada.usuarioId,
-  );
-  return { ...reservaActualizada, ...auditoria };
+    if (usuarioAuth.rol !== "ADMIN" && reserva.usuarioId !== usuarioAuth.id) {
+      throw new ReservaForbiddenError(
+        "No tienes permisos para finalizar esta reserva",
+      );
+    }
+
+    if (reserva.fechaHoraCancelacion !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
+    }
+
+    if (reserva.fechaHoraCheckOut !== null) {
+      throw new ReservaConflictError("La reserva ya se encuentra finalizada");
+    }
+
+    if (reserva.fechaHoraCheckIn === null) {
+      throw new ReservaBusinessError(
+        "No se puede finalizar una reserva que no ha realizado check-in",
+      );
+    }
+
+    const ahora = reloj.ahora();
+    if (ahora < reserva.fechaHoraInicio || ahora >= reserva.fechaHoraFin) {
+      throw new ReservaBusinessError(
+        "Solo se pueden finalizar reservas que se encuentren en curso en el horario actual",
+      );
+    }
+
+    const observacionLimpia = input?.observacion?.trim() || null;
+    const resultado = await tx.reserva.updateMany({
+      where: {
+        id,
+        fechaHoraCancelacion: null,
+        fechaHoraCheckOut: null,
+        fechaHoraCheckIn: { not: null },
+      },
+      data: {
+        fechaHoraCheckOut: ahora,
+        ...(observacionLimpia ? { observacion: observacionLimpia } : {}),
+      },
+    });
+
+    if (resultado.count === 0) {
+      throw new ReservaConflictError(
+        "La reserva ya se encuentra finalizada o cancelada",
+      );
+    }
+
+    await registrarEventoReserva(tx, {
+      reservaId: id,
+      accion: "FINALIZACION",
+      actorId: usuarioAuth.id,
+      actorRol: usuarioAuth.rol,
+      fechaHora: ahora,
+      detalle: observacionLimpia,
+    });
+
+    const reservaActualizada = await tx.reserva.findUniqueOrThrow({
+      where: { id },
+      include: includeRecursosCompletos,
+    });
+
+    const auditoria = await obtenerAuditoriaReserva(
+      id,
+      {
+        titularId: reservaActualizada.usuarioId,
+        creadoPorId: reservaActualizada.creadoPorId,
+        canceladoPorId: reservaActualizada.canceladoPorId,
+      },
+      tx,
+    );
+
+    return { ...reservaActualizada, ...auditoria };
+  });
 }
 
 export async function confirmarReserva(
@@ -662,7 +631,7 @@ export async function confirmarReserva(
   }
 
   const config = await obtenerConfiguracion();
-  const { reservaConfirmada, ahora } = await prisma.$transaction(
+  const resultadoTx = await prisma.$transaction(
     async (tx) => {
       const referencia = await tx.reservaPendiente.findUnique({
         where: { id: reservaPendienteId },
@@ -712,9 +681,7 @@ export async function confirmarReserva(
         await tx.reservaPendiente.delete({
           where: { id: pendiente.id },
         });
-        throw new ReservaConflictError(
-          "El tiempo de 10 minutos para confirmar la reserva ha expirado. El cupo ha sido liberado.",
-        );
+        return { expirado: true as const };
       }
 
       const fechaLimiteCheckIn = calcularFechaLimiteCheckIn(
@@ -745,6 +712,7 @@ export async function confirmarReserva(
       const reservaConfirmada = await tx.reserva.create({
         data: {
           usuarioId: pendiente.usuarioId,
+          creadoPorId: pendiente.usuarioId,
           fechaHoraInicio: pendiente.fechaHoraDeseadaInicio,
           fechaHoraFin: pendiente.fechaHoraDeseadaFin,
           fechaLimiteCheckIn,
@@ -763,24 +731,39 @@ export async function confirmarReserva(
         where: { id: pendiente.id },
       });
 
-      return { reservaConfirmada, ahora };
+      await registrarEventoReserva(tx, {
+        reservaId: reservaConfirmada.id,
+        accion: "CONFIRMACION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        fechaHora: ahora,
+      });
+
+      const auditoria = await obtenerAuditoriaReserva(
+        reservaConfirmada.id,
+        {
+          titularId: reservaConfirmada.usuarioId,
+          creadoPorId: reservaConfirmada.creadoPorId,
+          canceladoPorId: reservaConfirmada.canceladoPorId,
+        },
+        tx,
+      );
+
+      return {
+        expirado: false as const,
+        data: { ...reservaConfirmada, ...auditoria },
+      };
     },
     { maxWait: 10000, timeout: 15000 },
   );
 
-  await registrarEventoReserva({
-    reservaId: reservaConfirmada.id,
-    accion: "CONFIRMACION",
-    actorId: usuarioAuth.id,
-    actorRol: usuarioAuth.rol,
-    fechaHora: ahora,
-  });
+  if (resultadoTx.expirado) {
+    throw new ReservaConflictError(
+      "El tiempo de 10 minutos para confirmar la reserva ha expirado. El cupo ha sido liberado.",
+    );
+  }
 
-  const auditoria = await obtenerAuditoriaReserva(
-    reservaConfirmada.id,
-    reservaConfirmada.usuarioId,
-  );
-  return { ...reservaConfirmada, ...auditoria };
+  return resultadoTx.data;
 }
 
 export async function liberarHold(

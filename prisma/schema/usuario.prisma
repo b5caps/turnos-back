@@ -25,6 +25,9 @@ model Usuario {
   reservasPendientes ReservaPendiente[]
   bloqueosCreados     Bloqueo[]
   checkInsRegistrados Reserva[] @relation("CheckInRegistradoPor")
+  reservasCreadas     Reserva[] @relation("ReservaCreadaPor")
+  reservasCanceladas  Reserva[] @relation("ReservaCanceladaPor")
+  eventosBitacora     ReservaBitacora[] @relation("EventosBitacora")
 
   @@unique([tipoDocumento, documento])
   @@unique([email])

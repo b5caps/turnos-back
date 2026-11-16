@@ -11,16 +11,13 @@ import {
   finalizarReserva,
   liberarHold,
   listarReservas,
+  obtenerReservaPorId,
   resolverTitularReserva,
   ReservaBusinessError,
   ReservaConflictError,
   ReservaForbiddenError,
   ReservaNotFoundError,
 } from "../services/reservas.service.js";
-import {
-  obtenerAuditoriaReserva,
-  registrarEventoReserva,
-} from "../services/auditoria.service.js";
 import {
   cancelarReservaBodySchema,
   cancelarReservaParamsSchema,
@@ -121,6 +118,32 @@ const listarReservasRoute = createRoute({
       description: "Lista de reservas obtenida exitosamente",
     },
     401: unauthorizedResponse,
+  },
+});
+
+const obtenerReservaRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Reservas"],
+  summary: "Obtener detalle de una reserva",
+  description:
+    "Devuelve el detalle completo de una reserva incluyendo información de auditoría y bitácora de eventos.",
+  security: [{ Bearer: [] }],
+  request: {
+    params: reservaParamsSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: reservaResponseSchema,
+        },
+      },
+      description: "Detalle de la reserva obtenido exitosamente",
+    },
+    401: unauthorizedResponse,
+    403: errorResponse("No autorizado para consultar esta reserva"),
+    404: errorResponse("Reserva no encontrada"),
   },
 });
 
@@ -274,6 +297,25 @@ reservas.openapi(listarReservasRoute, async (c) => {
   );
 });
 
+reservas.openapi(obtenerReservaRoute, async (c) => {
+  try {
+    const { id } = c.req.valid("param");
+    const usuarioAuth = c.get("usuario");
+
+    const reserva = await obtenerReservaPorId(id, usuarioAuth);
+    return c.json({ data: mapearReserva(reserva) }, 200);
+  } catch (error) {
+    if (error instanceof ReservaNotFoundError) {
+      return c.json({ message: error.message }, 404);
+    }
+    if (error instanceof ReservaForbiddenError) {
+      return c.json({ message: error.message }, 403);
+    }
+
+    throw error;
+  }
+});
+
 reservas.openapi(crearReservaRoute, async (c) => {
   try {
     const usuarioAuth = c.get("usuario");
@@ -291,30 +333,20 @@ reservas.openapi(crearReservaRoute, async (c) => {
 
     const titularId = await resolverTitularReserva(body.usuarioId, usuarioAuth);
 
-    const resultado = await crearReserva({
-      ...body,
-      usuarioId: titularId,
-    });
+    const resultado = await crearReserva(
+      {
+        ...body,
+        usuarioId: titularId,
+      },
+      { id: usuarioAuth.id, rol: usuarioAuth.rol },
+    );
 
     // Si es una Reserva confirmada inmediatamente por ADMIN:
     if ("fechaHoraInicio" in resultado) {
-      await registrarEventoReserva({
-        reservaId: resultado.id,
-        accion: "CREACION",
-        actorId: usuarioAuth.id,
-        actorRol: usuarioAuth.rol,
-        fechaHora: resultado.fechaHoraConfirmacion ?? new Date(),
-      });
-      const auditoria = await obtenerAuditoriaReserva(
-        resultado.id,
-        resultado.usuarioId,
-      );
-
       return c.json(
         {
           data: mapearReserva({
             ...resultado,
-            ...auditoria,
             confirmada: true,
             esPendiente: false,
           }),

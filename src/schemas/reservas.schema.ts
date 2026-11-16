@@ -117,6 +117,13 @@ export const recursoDetalleSchema = z.object({
   }),
 });
 
+export const actorBitacoraSchema = z.object({
+  id: z.number().int(),
+  nombre: z.string(),
+  apellido: z.string(),
+  email: z.string(),
+});
+
 export const eventoBitacoraSchema = z.object({
   accion: z.enum([
     "CREACION",
@@ -125,8 +132,9 @@ export const eventoBitacoraSchema = z.object({
     "CANCELACION",
     "FINALIZACION",
   ]),
-  actorId: z.number().int(),
+  actorId: z.number().int().nullable(),
   actorRol: z.enum(["ADMIN", "UTN", "EXTERNO"]),
+  actor: actorBitacoraSchema.nullable().optional(),
   fechaHora: z.string(),
   detalle: z.string().nullable(),
 });
