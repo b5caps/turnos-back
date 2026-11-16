@@ -41,6 +41,7 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
       where: {
         reserva: {
           fechaHoraCancelacion: null,
+          fechaHoraCheckOut: null,
           fechaHoraInicio: { lte: ahora },
           fechaHoraFin: { gt: ahora },
         },
@@ -95,7 +96,7 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
       canceladas++;
     } else {
       activas++;
-      if (reserva.fechaHoraFin <= ahora) {
+      if (reserva.fechaHoraFin <= ahora || reserva.fechaHoraCheckOut !== null) {
         finalizadas++;
       } else if (
         reserva.fechaHoraInicio <= ahora &&
@@ -105,11 +106,12 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
       }
 
       // Cálculo de horas para la tasa de ocupación del día
+      const finEfectivo = reserva.fechaHoraCheckOut ?? reserva.fechaHoraFin;
       const rInicio = Math.max(
         reserva.fechaHoraInicio.getTime(),
         inicioDia.getTime(),
       );
-      const rFin = Math.min(reserva.fechaHoraFin.getTime(), finDia.getTime());
+      const rFin = Math.min(finEfectivo.getTime(), finDia.getTime());
       if (rFin > rInicio) {
         const cantidadRecursos = Math.max(1, reserva.recursos.length);
         totalMilisegundosReservados += (rFin - rInicio) * cantidadRecursos;

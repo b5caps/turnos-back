@@ -16,6 +16,7 @@ import { liberarAusenciasDeRecursos } from "./ausencias.service.js";
 import { reloj } from "../lib/reloj.js";
 
 export const DURACION_HOLD_MINUTOS = 10;
+export const MAX_HOLDS_ACTIVOS_POR_USUARIO = 3;
 
 type TipoRecurso = "SALA" | "NOTEBOOK";
 
@@ -178,6 +179,10 @@ async function consultarDisponibilidadPorTipo(
             fechaHoraCancelacion: null,
             fechaHoraInicio: { lt: finDia },
             fechaHoraFin: { gt: inicioDia },
+            OR: [
+              { fechaHoraCheckOut: null },
+              { fechaHoraCheckOut: { gt: inicioDia } },
+            ],
           },
         },
         include: {
@@ -234,9 +239,8 @@ async function consultarDisponibilidadPorTipo(
       .map((rr) => rr.reserva)
       .filter((reserva) => {
         if (reserva.fechaHoraCancelacion) return false;
-        return (
-          reserva.fechaHoraInicio < finDia && reserva.fechaHoraFin > inicioDia
-        );
+        const finEfectivo = reserva.fechaHoraCheckOut ?? reserva.fechaHoraFin;
+        return reserva.fechaHoraInicio < finDia && finEfectivo > inicioDia;
       });
 
     // Reservas pendientes activas (hold no expirado) dentro del horario consultado
@@ -274,9 +278,8 @@ async function consultarDisponibilidadPorTipo(
 
         // Reservas confirmadas que solapan este bloque de 15 minutos
         const reservasBloque = reservasSolapadas.filter((reserva) => {
-          return (
-            reserva.fechaHoraInicio < bFin && reserva.fechaHoraFin > bInicio
-          );
+          const finEfectivo = reserva.fechaHoraCheckOut ?? reserva.fechaHoraFin;
+          return reserva.fechaHoraInicio < bFin && finEfectivo > bInicio;
         });
 
         // Reservas pendientes (holds) que solapan este bloque de 15 minutos
@@ -290,13 +293,18 @@ async function consultarDisponibilidadPorTipo(
         const cuposLibres = Math.max(0, recurso.capacidad - ocupacion);
 
         let motivoNoDisponible:
-          "fuera_de_horario" | "bloqueado" | "sin_cupos" | null = null;
+          "fuera_de_horario" | "bloqueado" | "sin_cupos" | "en_gestion" | null =
+          null;
         if (!dentroDeHorario) {
           motivoNoDisponible = "fuera_de_horario";
         } else if (hayBloqueo) {
           motivoNoDisponible = "bloqueado";
         } else if (cuposLibres <= 0) {
-          motivoNoDisponible = "sin_cupos";
+          motivoNoDisponible =
+            reservasBloque.length < recurso.capacidad &&
+            pendientesBloque.length > 0
+              ? "en_gestion"
+              : "sin_cupos";
         }
 
         const disponible = dentroDeHorario && !hayBloqueo && cuposLibres > 0;
@@ -329,7 +337,7 @@ async function consultarDisponibilidadPorTipo(
       ...datosEspecificos,
       horariosReservados: reservasSolapadas.map((reserva) => ({
         horaInicio: reserva.fechaHoraInicio,
-        horaFin: reserva.fechaHoraFin,
+        horaFin: reserva.fechaHoraCheckOut ?? reserva.fechaHoraFin,
       })),
       bloques,
     };
@@ -514,6 +522,10 @@ export async function crearReserva(input: CrearReservaInput) {
                     fechaHoraCancelacion: null,
                     fechaHoraInicio: { lt: fin },
                     fechaHoraFin: { gt: inicio },
+                    OR: [
+                      { fechaHoraCheckOut: null },
+                      { fechaHoraCheckOut: { gt: inicio } },
+                    ],
                   },
                 },
               },
@@ -617,6 +629,19 @@ export async function crearReserva(input: CrearReservaInput) {
       }
 
       // 4. Usuario común (o admin sin confirmación inmediata): Crear ReservaPendiente (Hold de 10 min)
+      const holdsActivos = await tx.reservaPendiente.count({
+        where: {
+          usuarioId: input.usuarioId,
+          fechaHoraSolicitud: { gt: limiteHold },
+        },
+      });
+
+      if (holdsActivos >= MAX_HOLDS_ACTIVOS_POR_USUARIO) {
+        throw new ReservaConflictError(
+          `Has alcanzado el límite máximo de ${MAX_HOLDS_ACTIVOS_POR_USUARIO} reservas pendientes (holds) simultáneas. Confirma o libera una antes de continuar.`,
+        );
+      }
+
       return tx.reservaPendiente.create({
         data: {
           usuarioId: input.usuarioId,

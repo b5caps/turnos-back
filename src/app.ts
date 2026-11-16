@@ -10,8 +10,9 @@ import configuracionRoutes from "./routes/configuracion.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import bloqueosRoutes from "./routes/bloqueos.routes.js";
 import asistenciaRoutes from "./routes/asistencia.routes.js";
+import { validationHook } from "./lib/validation.js";
 
-export const app = new OpenAPIHono();
+export const app = new OpenAPIHono({ defaultHook: validationHook });
 
 app.use("/*", cors());
 app.get("/", (c) => {

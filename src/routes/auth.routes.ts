@@ -5,10 +5,12 @@ import {
   registrar,
   revocarToken,
 } from "../services/auth.service.js";
+import { liberarHoldsDeUsuario } from "../services/reservas.service.js";
 import { loginSchema, registroSchema } from "../schemas/auth.schema.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
+import { requireJsonBody, validationHook } from "../lib/validation.js";
 
-const auth = new OpenAPIHono();
+const auth = new OpenAPIHono({ defaultHook: validationHook });
 
 const sesionSchema = z.object({
   usuario: z.object({
@@ -31,7 +33,10 @@ const registroRoute = createRoute({
   tags: ["Autenticación"],
   summary: "Registrar usuario UTN o externo",
   request: {
-    body: { content: { "application/json": { schema: registroSchema } } },
+    body: {
+      required: true,
+      content: { "application/json": { schema: registroSchema } },
+    },
   },
   responses: {
     201: {
@@ -55,7 +60,10 @@ const loginRoute = createRoute({
   tags: ["Autenticación"],
   summary: "Iniciar sesión con email/legajo y contraseña",
   request: {
-    body: { content: { "application/json": { schema: loginSchema } } },
+    body: {
+      required: true,
+      content: { "application/json": { schema: loginSchema } },
+    },
   },
   responses: {
     200: {
@@ -91,6 +99,9 @@ const logoutRoute = createRoute({
   },
 });
 
+auth.use("/registro", requireJsonBody);
+auth.use("/login", requireJsonBody);
+
 auth.openapi(registroRoute, async (c) => {
   try {
     return c.json(await registrar(c.req.valid("json")), 201);
@@ -118,8 +129,10 @@ auth.openapi(loginRoute, async (c) => {
 auth.use("/logout", requireAuth);
 
 auth.openapi(logoutRoute, async (c) => {
+  const usuario = c.get("usuario");
   const token = c.get("token");
   revocarToken(token);
+  await liberarHoldsDeUsuario(usuario.id);
   return c.json({ message: "Sesión cerrada exitosamente" }, 200);
 });
 
