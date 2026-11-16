@@ -10,3 +10,29 @@ model Configuracion {
   minutosGraciaCheckIn       Int      @default(15)
   actualizadoEn              DateTime @updatedAt
 }
+
+enum TipoEntidadAuditoria {
+  ESPACIO
+  CONFIGURACION
+}
+
+enum AccionEntidadAuditoria {
+  CREACION
+  ACTUALIZACION
+  DESACTIVACION
+  ELIMINACION
+}
+
+model EntidadBitacora {
+  id          Int                    @id @default(autoincrement())
+  entidadTipo TipoEntidadAuditoria
+  entidadId   Int
+  accion      AccionEntidadAuditoria
+  actorId     Int?
+  actor       Usuario?               @relation("EntidadesBitacora", fields: [actorId], references: [id], onDelete: SetNull)
+  actorRol    Rol
+  fechaHora   DateTime               @default(now())
+  detalle     String?
+
+  @@index([entidadTipo, entidadId, fechaHora, id])
+}

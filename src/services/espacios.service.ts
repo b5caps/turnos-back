@@ -13,6 +13,7 @@ import {
 } from "./auditoria.service.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
 import { prisma } from "../lib/prisma.js";
+import { reloj } from "../lib/reloj.js";
 
 export class EspacioNotFoundError extends Error {}
 export class EspacioConflictError extends Error {}
@@ -133,7 +134,7 @@ export async function crearEspacio(
     }));
   }
 
-  const recurso = await prisma.$transaction(async (tx) => {
+  const { recurso, historial } = await prisma.$transaction(async (tx) => {
     const data: Prisma.RecursoCreateInput = {
       nombre: nombreNormalizado,
       descripcion: input.descripcion ?? "",
@@ -153,7 +154,7 @@ export async function crearEspacio(
       },
     };
 
-    return tx.recurso.create({
+    const creado = await tx.recurso.create({
       data,
       include: {
         sala: true,
@@ -162,20 +163,26 @@ export async function crearEspacio(
         },
       },
     });
+
+    if (usuarioAuth) {
+      await registrarCambioEntidad(tx, {
+        entidadTipo: "ESPACIO",
+        entidadId: creado.id,
+        accion: "CREACION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        detalle: `Espacio '${creado.nombre}' creado (capacidad ${creado.capacidad})`,
+      });
+    }
+
+    const historialEspacio = await obtenerHistorialEntidad(
+      "ESPACIO",
+      creado.id,
+      tx,
+    );
+    return { recurso: creado, historial: historialEspacio };
   });
 
-  if (usuarioAuth) {
-    await registrarCambioEntidad({
-      entidadTipo: "ESPACIO",
-      entidadId: recurso.id,
-      accion: "CREACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
-      detalle: `Espacio '${recurso.nombre}' creado (capacidad ${recurso.capacidad})`,
-    });
-  }
-
-  const historial = await obtenerHistorialEntidad("ESPACIO", recurso.id);
   return mapearEspacio(recurso, historial);
 }
 
@@ -221,7 +228,7 @@ export async function actualizarEspacio(
     input.capacidad !== undefined && input.capacidad < existente.capacidad;
 
   if (desactivando || reduciendoCapacidad) {
-    const ahora = new Date();
+    const ahora = reloj.ahora();
     const reservaVigente = await prisma.reservaRecurso.findFirst({
       where: {
         recursoId: id,
@@ -243,7 +250,7 @@ export async function actualizarEspacio(
     }
   }
 
-  const recurso = await prisma.$transaction(async (tx) => {
+  const { recurso, historial } = await prisma.$transaction(async (tx) => {
     const dataRecurso: Prisma.RecursoUpdateInput = {};
     if (input.nombre !== undefined) dataRecurso.nombre = input.nombre.trim();
     if (input.descripcion !== undefined)
@@ -275,7 +282,7 @@ export async function actualizarEspacio(
       }
     }
 
-    return tx.recurso.update({
+    const actualizado = await tx.recurso.update({
       where: { id },
       data: dataRecurso,
       include: {
@@ -285,20 +292,22 @@ export async function actualizarEspacio(
         },
       },
     });
+
+    if (usuarioAuth) {
+      await registrarCambioEntidad(tx, {
+        entidadTipo: "ESPACIO",
+        entidadId: id,
+        accion: desactivando ? "DESACTIVACION" : "ACTUALIZACION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        detalle: `Actualización de espacio '${actualizado.nombre}'`,
+      });
+    }
+
+    const historialEspacio = await obtenerHistorialEntidad("ESPACIO", id, tx);
+    return { recurso: actualizado, historial: historialEspacio };
   });
 
-  if (usuarioAuth) {
-    await registrarCambioEntidad({
-      entidadTipo: "ESPACIO",
-      entidadId: id,
-      accion: desactivando ? "DESACTIVACION" : "ACTUALIZACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
-      detalle: `Actualización de espacio '${recurso.nombre}'`,
-    });
-  }
-
-  const historial = await obtenerHistorialEntidad("ESPACIO", id);
   return mapearEspacio(recurso, historial);
 }
 
@@ -320,7 +329,7 @@ export async function eliminarODesactivarEspacio(
     throw new EspacioNotFoundError("Espacio no encontrado");
   }
 
-  const ahora = new Date();
+  const ahora = reloj.ahora();
 
   // Validar si posee reservas activas o futuras vigentes
   const reservaActivaOFutura = await prisma.reservaRecurso.findFirst({
@@ -349,29 +358,33 @@ export async function eliminarODesactivarEspacio(
 
   if (reservaHistorica) {
     // Desactivación lógica automática
-    const recurso = await prisma.recurso.update({
-      where: { id },
-      data: { activo: false },
-      include: {
-        sala: true,
-        disponibilidades: {
-          orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+    const { recurso, historial } = await prisma.$transaction(async (tx) => {
+      const desactivado = await tx.recurso.update({
+        where: { id },
+        data: { activo: false },
+        include: {
+          sala: true,
+          disponibilidades: {
+            orderBy: [{ diaSemana: "asc" }, { minutosInicio: "asc" }],
+          },
         },
-      },
+      });
+
+      if (usuarioAuth) {
+        await registrarCambioEntidad(tx, {
+          entidadTipo: "ESPACIO",
+          entidadId: id,
+          accion: "DESACTIVACION",
+          actorId: usuarioAuth.id,
+          actorRol: usuarioAuth.rol,
+          detalle: `Espacio '${espacio.nombre}' desactivado lógicamente`,
+        });
+      }
+
+      const historialEspacio = await obtenerHistorialEntidad("ESPACIO", id, tx);
+      return { recurso: desactivado, historial: historialEspacio };
     });
 
-    if (usuarioAuth) {
-      await registrarCambioEntidad({
-        entidadTipo: "ESPACIO",
-        entidadId: id,
-        accion: "DESACTIVACION",
-        actorId: usuarioAuth.id,
-        actorRol: usuarioAuth.rol,
-        detalle: `Espacio '${espacio.nombre}' desactivado lógicamente`,
-      });
-    }
-
-    const historial = await obtenerHistorialEntidad("ESPACIO", id);
     return {
       message:
         "El espacio posee historial de reservas asociadas y ha sido desactivado lógicamente para preservar la integridad histórica.",
@@ -381,23 +394,23 @@ export async function eliminarODesactivarEspacio(
   }
 
   // Eliminación física definitiva
-  await prisma.$transaction([
-    prisma.disponibilidad.deleteMany({ where: { recursoId: id } }),
-    prisma.bloqueo.deleteMany({ where: { recursoId: id } }),
-    prisma.sala.delete({ where: { recursoId: id } }),
-    prisma.recurso.delete({ where: { id } }),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await tx.disponibilidad.deleteMany({ where: { recursoId: id } });
+    await tx.bloqueo.deleteMany({ where: { recursoId: id } });
+    await tx.sala.delete({ where: { recursoId: id } });
+    await tx.recurso.delete({ where: { id } });
 
-  if (usuarioAuth) {
-    await registrarCambioEntidad({
-      entidadTipo: "ESPACIO",
-      entidadId: id,
-      accion: "ELIMINACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
-      detalle: `Espacio '${espacio.nombre}' eliminado definitivamente`,
-    });
-  }
+    if (usuarioAuth) {
+      await registrarCambioEntidad(tx, {
+        entidadTipo: "ESPACIO",
+        entidadId: id,
+        accion: "ELIMINACION",
+        actorId: usuarioAuth.id,
+        actorRol: usuarioAuth.rol,
+        detalle: `Espacio '${espacio.nombre}' eliminado definitivamente`,
+      });
+    }
+  });
 
   return {
     message: "Espacio eliminado exitosamente de forma definitiva.",

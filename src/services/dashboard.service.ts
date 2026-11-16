@@ -1,14 +1,16 @@
 import type { DashboardQuery } from "../schemas/dashboard.schema.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
 import { prisma } from "../lib/prisma.js";
-
-function formatearFechaLocal(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+import {
+  fechaDelEstablecimiento,
+  instanteDelEstablecimiento,
+  sumarDiasFecha,
+} from "../lib/horarios.js";
+import { reloj } from "../lib/reloj.js";
 
 export async function obtenerMetricasDashboard(query: DashboardQuery) {
-  const ahora = new Date();
-  const hoyStr = formatearFechaLocal(ahora);
+  const ahora = reloj.ahora();
+  const hoyStr = fechaDelEstablecimiento(ahora);
 
   // 1. Determinar rango objetivo (desde/hasta o fecha única)
   const fechaInicioStr =
@@ -19,14 +21,17 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
   const [anioIni, mesIni, diaIni] = fechaInicioStr.split("-").map(Number);
   const [anioFin, mesFin, diaFin] = fechaFinStr.split("-").map(Number);
 
-  const inicioPeriodo = new Date(anioIni, mesIni - 1, diaIni, 0, 0, 0, 0);
-  const finPeriodo = new Date(anioFin, mesFin - 1, diaFin, 23, 59, 59, 999);
+  const inicioPeriodo = instanteDelEstablecimiento(fechaInicioStr, 0);
+  const finPeriodo = instanteDelEstablecimiento(
+    sumarDiasFecha(fechaFinStr, 1),
+    0,
+  );
 
   const diasPeriodo = Math.max(
     1,
     Math.round(
-      (new Date(anioFin, mesFin - 1, diaFin).getTime() -
-        new Date(anioIni, mesIni - 1, diaIni).getTime()) /
+      (Date.UTC(anioFin, mesFin - 1, diaFin) -
+        Date.UTC(anioIni, mesIni - 1, diaIni)) /
         (24 * 60 * 60 * 1000),
     ) + 1,
   );
@@ -36,7 +41,7 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
   const incluyeHoy = hoyStr >= fechaInicioStr && hoyStr <= fechaFinStr;
   const referenciaOcupacion = incluyeHoy
     ? ahora
-    : new Date(anioIni, mesIni - 1, diaIni, 12, 0, 0, 0);
+    : instanteDelEstablecimiento(fechaInicioStr, 12 * 60);
 
   // 2. Ejecutar consultas concurrentes filtrando únicamente recursos activos
   const [
@@ -65,8 +70,8 @@ export async function obtenerMetricasDashboard(query: DashboardQuery) {
     }),
     prisma.reserva.findMany({
       where: {
-        fechaHoraInicio: { lte: finPeriodo },
-        fechaHoraFin: { gte: inicioPeriodo },
+        fechaHoraInicio: { lt: finPeriodo },
+        fechaHoraFin: { gt: inicioPeriodo },
       },
       include: {
         recursos: true,

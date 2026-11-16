@@ -146,47 +146,61 @@ export async function actualizarConfiguracion(
     }),
   };
 
-  const actualizado = await prisma.$transaction(async (tx) => {
-    const cfg = await tx.configuracion.upsert({
-      where: { id: 1 },
-      update: dataUpdate,
-      create: {
-        ...VALORES_POR_DEFECTO,
-        ...dataUpdate,
-      },
-    });
+  const { actualizado, historialCambios } = await prisma.$transaction(
+    async (tx) => {
+      const cfg = await tx.configuracion.upsert({
+        where: { id: 1 },
+        update: dataUpdate,
+        create: {
+          ...VALORES_POR_DEFECTO,
+          ...dataUpdate,
+        },
+      });
 
-    // Propagar cambios en horario global de apertura/cierre hacia las disponibilidades
-    if (
-      input.minutosApertura !== undefined &&
-      input.minutosApertura !== actual.minutosApertura
-    ) {
-      await tx.disponibilidad.updateMany({
-        where: { minutosInicio: actual.minutosApertura },
-        data: { minutosInicio: nuevaApertura },
-      });
-      await tx.disponibilidad.updateMany({
-        where: { minutosInicio: { lt: nuevaApertura } },
-        data: { minutosInicio: nuevaApertura },
-      });
-    }
+      // Propagar cambios en horario global de apertura/cierre hacia las disponibilidades
+      if (
+        input.minutosApertura !== undefined &&
+        input.minutosApertura !== actual.minutosApertura
+      ) {
+        await tx.disponibilidad.updateMany({
+          where: { minutosInicio: actual.minutosApertura },
+          data: { minutosInicio: nuevaApertura },
+        });
+        await tx.disponibilidad.updateMany({
+          where: { minutosInicio: { lt: nuevaApertura } },
+          data: { minutosInicio: nuevaApertura },
+        });
+      }
 
-    if (
-      input.minutosCierre !== undefined &&
-      input.minutosCierre !== actual.minutosCierre
-    ) {
-      await tx.disponibilidad.updateMany({
-        where: { minutosFin: actual.minutosCierre },
-        data: { minutosFin: nuevoCierre },
-      });
-      await tx.disponibilidad.updateMany({
-        where: { minutosFin: { gt: nuevoCierre } },
-        data: { minutosFin: nuevoCierre },
-      });
-    }
+      if (
+        input.minutosCierre !== undefined &&
+        input.minutosCierre !== actual.minutosCierre
+      ) {
+        await tx.disponibilidad.updateMany({
+          where: { minutosFin: actual.minutosCierre },
+          data: { minutosFin: nuevoCierre },
+        });
+        await tx.disponibilidad.updateMany({
+          where: { minutosFin: { gt: nuevoCierre } },
+          data: { minutosFin: nuevoCierre },
+        });
+      }
 
-    return cfg;
-  });
+      if (usuarioAuth) {
+        await registrarCambioEntidad(tx, {
+          entidadTipo: "CONFIGURACION",
+          entidadId: 1,
+          accion: "ACTUALIZACION",
+          actorId: usuarioAuth.id,
+          actorRol: usuarioAuth.rol,
+          detalle: `Horario ${nuevaApertura}-${nuevoCierre}, antelación ${cfg.tiempoMaximoAntelacionDias}d, duración ${cfg.duracionMinimaMinutos}-${cfg.duracionMaximaMinutos}m`,
+        });
+      }
+
+      const historial = await obtenerHistorialEntidad("CONFIGURACION", 1, tx);
+      return { actualizado: cfg, historialCambios: historial };
+    },
+  );
 
   const data = {
     id: actualizado.id,
@@ -201,18 +215,6 @@ export async function actualizarConfiguracion(
 
   configCache = { data, expiresAt: Date.now() + TTL_CACHE_MS };
 
-  if (usuarioAuth) {
-    await registrarCambioEntidad({
-      entidadTipo: "CONFIGURACION",
-      entidadId: 1,
-      accion: "ACTUALIZACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
-      detalle: `Horario ${nuevaApertura}-${nuevoCierre}, antelación ${actualizado.tiempoMaximoAntelacionDias}d, duración ${actualizado.duracionMinimaMinutos}-${actualizado.duracionMaximaMinutos}m`,
-    });
-  }
-
-  const historialCambios = await obtenerHistorialEntidad("CONFIGURACION", 1);
   const ultimo =
     historialCambios.length > 0
       ? historialCambios[historialCambios.length - 1]

@@ -187,8 +187,17 @@ export const actualizarEspacioSchema = z.object({
 
 export const cambioEspacioSchema = z.object({
   accion: z.enum(["CREACION", "ACTUALIZACION", "DESACTIVACION", "ELIMINACION"]),
-  actorId: z.number().int(),
+  actorId: z.number().int().nullable(),
   actorRol: z.enum(["ADMIN", "UTN", "EXTERNO"]),
+  actor: z
+    .object({
+      id: z.number().int(),
+      nombre: z.string(),
+      apellido: z.string(),
+      email: z.string(),
+    })
+    .nullable()
+    .optional(),
   fechaHora: z.string(),
   detalle: z.string().nullable(),
 });
