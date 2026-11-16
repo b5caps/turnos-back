@@ -42,8 +42,8 @@ model Disponibilidad {
 
 model Bloqueo {
   id              Int       @id @default(autoincrement())
-  recursoId       Int
-  recurso         Recurso   @relation(fields: [recursoId], references: [id])
+  recursoId       Int?
+  recurso         Recurso?  @relation(fields: [recursoId], references: [id])
   fechaHoraInicio DateTime
   fechaHoraFin    DateTime?
   motivo          String
@@ -52,6 +52,7 @@ model Bloqueo {
   creadoPor       Usuario?  @relation(fields: [creadoPorId], references: [id])
 
   @@index([recursoId, fechaHoraInicio])
+  @@index([fechaHoraInicio, fechaHoraFin])
 }
 
 model ReservaRecurso {

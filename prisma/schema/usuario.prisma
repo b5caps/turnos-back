@@ -29,6 +29,7 @@ model Usuario {
   reservasCanceladas  Reserva[]         @relation("ReservaCanceladaPor")
   eventosBitacora     ReservaBitacora[] @relation("EventosBitacora")
   entidadesBitacora   EntidadBitacora[] @relation("EntidadesBitacora")
+  feriadosCreados     Feriado[]         @relation("FeriadosCreados")
 
   @@unique([tipoDocumento, documento])
   @@unique([email])

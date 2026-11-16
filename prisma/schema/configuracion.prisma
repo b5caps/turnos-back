@@ -36,3 +36,14 @@ model EntidadBitacora {
 
   @@index([entidadTipo, entidadId, fechaHora, id])
 }
+
+model Feriado {
+  id            Int      @id @default(autoincrement())
+  fecha         String   @unique
+  nombre        String
+  creadoPorId   Int?
+  creadoPor     Usuario? @relation("FeriadosCreados", fields: [creadoPorId], references: [id], onDelete: SetNull)
+  fechaCreacion DateTime @default(now())
+
+  @@index([fecha])
+}

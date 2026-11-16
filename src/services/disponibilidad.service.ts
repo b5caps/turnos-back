@@ -149,73 +149,89 @@ async function consultarDisponibilidadPorTipo(
   const incluirSala = input.tipo !== "NOTEBOOK";
   const incluirNotebook = input.tipo !== "SALA";
 
-  const recursos = await prisma.recurso.findMany({
-    where: {
-      activo: true,
-      ...(input.tipo
-        ? { [input.tipo === "SALA" ? "sala" : "notebook"]: { isNot: null } }
-        : {}),
-    },
-    include: {
-      ...(incluirSala ? { sala: true } : {}),
-      ...(incluirNotebook ? { notebook: true } : {}),
-      disponibilidades: {
-        where: {
-          diaSemana,
-        },
+  const [feriado, bloqueosGlobales, recursos] = await Promise.all([
+    prisma.feriado.findUnique({
+      where: { fecha: input.fecha },
+      select: { id: true },
+    }),
+    prisma.bloqueo.findMany({
+      where: {
+        recursoId: null,
+        ...bloqueosSolapados(inicioDia, finDia),
       },
-      bloqueos: {
-        where: bloqueosSolapados(inicioDia, finDia),
-        select: {
-          fechaHoraInicio: true,
-          fechaHoraFin: true,
-        },
+      select: {
+        fechaHoraInicio: true,
+        fechaHoraFin: true,
       },
-      reservas: {
-        where: {
-          reserva: {
-            fechaHoraCancelacion: null,
-            fechaHoraInicio: { lt: finDia },
-            fechaHoraFin: { gt: inicioDia },
-            OR: [
-              { fechaHoraCheckOut: null },
-              { fechaHoraCheckOut: { gt: inicioDia } },
-            ],
+    }),
+    prisma.recurso.findMany({
+      where: {
+        activo: true,
+        ...(input.tipo
+          ? { [input.tipo === "SALA" ? "sala" : "notebook"]: { isNot: null } }
+          : {}),
+      },
+      include: {
+        ...(incluirSala ? { sala: true } : {}),
+        ...(incluirNotebook ? { notebook: true } : {}),
+        disponibilidades: {
+          where: {
+            diaSemana,
           },
         },
-        select: {
-          reserva: {
-            select: {
-              fechaHoraInicio: true,
-              fechaHoraFin: true,
-              fechaHoraCheckOut: true,
-              fechaHoraCancelacion: true,
+        bloqueos: {
+          where: bloqueosSolapados(inicioDia, finDia),
+          select: {
+            fechaHoraInicio: true,
+            fechaHoraFin: true,
+          },
+        },
+        reservas: {
+          where: {
+            reserva: {
+              fechaHoraCancelacion: null,
+              fechaHoraInicio: { lt: finDia },
+              fechaHoraFin: { gt: inicioDia },
+              OR: [
+                { fechaHoraCheckOut: null },
+                { fechaHoraCheckOut: { gt: inicioDia } },
+              ],
+            },
+          },
+          select: {
+            reserva: {
+              select: {
+                fechaHoraInicio: true,
+                fechaHoraFin: true,
+                fechaHoraCheckOut: true,
+                fechaHoraCancelacion: true,
+              },
+            },
+          },
+        },
+        reservasPendientes: {
+          where: {
+            reservaPendiente: {
+              fechaHoraSolicitud: {
+                gt: limiteHold,
+              },
+              fechaHoraDeseadaInicio: { lt: finDia },
+              fechaHoraDeseadaFin: { gt: inicioDia },
+            },
+          },
+          select: {
+            reservaPendiente: {
+              select: {
+                fechaHoraSolicitud: true,
+                fechaHoraDeseadaInicio: true,
+                fechaHoraDeseadaFin: true,
+              },
             },
           },
         },
       },
-      reservasPendientes: {
-        where: {
-          reservaPendiente: {
-            fechaHoraSolicitud: {
-              gt: limiteHold,
-            },
-            fechaHoraDeseadaInicio: { lt: finDia },
-            fechaHoraDeseadaFin: { gt: inicioDia },
-          },
-        },
-        select: {
-          reservaPendiente: {
-            select: {
-              fechaHoraSolicitud: true,
-              fechaHoraDeseadaInicio: true,
-              fechaHoraDeseadaFin: true,
-            },
-          },
-        },
-      },
-    },
-  });
+    }),
+  ]);
 
   // Generar los intervalos de 15 minutos entre apertura y cierre del día
   const intervalosBloques: {
@@ -270,16 +286,27 @@ async function consultarDisponibilidadPorTipo(
               inicioMin >= disp.minutosInicio && finMin <= disp.minutosFin,
           );
 
-        // Verifica bloqueo superpuesto con este bloque
-        const hayBloqueo = recurso.bloqueos.some((bloqueo) => {
-          const bloqueoInicio = new Date(bloqueo.fechaHoraInicio);
-          const bloqueoFin = bloqueo.fechaHoraFin
-            ? new Date(bloqueo.fechaHoraFin)
-            : null;
-          return (
-            bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
-          );
-        });
+        // Verifica feriado o bloqueo superpuesto (propio o global) con este bloque
+        const hayBloqueo =
+          feriado !== null ||
+          bloqueosGlobales.some((bloqueo) => {
+            const bloqueoInicio = new Date(bloqueo.fechaHoraInicio);
+            const bloqueoFin = bloqueo.fechaHoraFin
+              ? new Date(bloqueo.fechaHoraFin)
+              : null;
+            return (
+              bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
+            );
+          }) ||
+          recurso.bloqueos.some((bloqueo) => {
+            const bloqueoInicio = new Date(bloqueo.fechaHoraInicio);
+            const bloqueoFin = bloqueo.fechaHoraFin
+              ? new Date(bloqueo.fechaHoraFin)
+              : null;
+            return (
+              bloqueoInicio < bFin && (bloqueoFin ? bloqueoFin > bInicio : true)
+            );
+          });
 
         // Reservas confirmadas que solapan este bloque de 15 minutos
         const reservasBloque = reservasSolapadas.filter((reserva) => {
@@ -514,8 +541,31 @@ export async function crearReserva(
       }
       await liberarAusenciasDeRecursos(tx, recursoIds);
 
-      // 2. Obtener recursos con sus disponibilidades y conteos de bloqueos, reservas y holds activos
-      const diaSemana = diaSemanaFecha(fechaDelEstablecimiento(inicio));
+      // 2. Verificar feriados, bloqueos globales y obtener recursos con sus disponibilidades y conteos
+      const fechaSolicitud = fechaDelEstablecimiento(inicio);
+      const feriado = await tx.feriado.findUnique({
+        where: { fecha: fechaSolicitud },
+      });
+      if (feriado) {
+        throw new ReservaConflictError(
+          `No se pueden realizar reservas en días feriados (${feriado.nombre})`,
+        );
+      }
+
+      const bloqueoGlobal = await tx.bloqueo.findFirst({
+        where: {
+          recursoId: null,
+          ...bloqueosSolapados(inicio, fin),
+        },
+        select: { id: true },
+      });
+      if (bloqueoGlobal) {
+        throw new ReservaConflictError(
+          "El establecimiento se encuentra bloqueado por administración en el horario solicitado",
+        );
+      }
+
+      const diaSemana = diaSemanaFecha(fechaSolicitud);
       const recursos = await tx.recurso.findMany({
         where: {
           id: { in: recursoIds },

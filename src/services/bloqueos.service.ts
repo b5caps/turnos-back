@@ -1,15 +1,21 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
+import { bloquearReserva } from "../lib/reservas-lock.js";
+import { reloj } from "../lib/reloj.js";
 import { instanteDelEstablecimiento, sumarDiasFecha } from "../lib/horarios.js";
+import { registrarEventoReserva } from "./auditoria.service.js";
 import type {
+  CrearBloqueoGlobalInput,
   CrearBloqueoInput,
+  ListarBloqueosCalendarioQuery,
   ListarBloqueosQuery,
 } from "../schemas/bloqueos.schema.js";
 import type { TokenPayload } from "./auth.service.js";
 
 export class BloqueoNotFoundError extends Error {}
 export class BloqueoForbiddenError extends Error {}
+export class BloqueoBusinessError extends Error {}
 
 function exigirAdministrador(usuario: TokenPayload) {
   if (usuario.rol !== "ADMIN") {
@@ -28,22 +34,38 @@ async function exigirEspacio(
   if (!espacio) throw new BloqueoNotFoundError("Espacio no encontrado");
 }
 
+function resolverRangoBloqueo(
+  input: CrearBloqueoInput | CrearBloqueoGlobalInput,
+): { inicio: Date; fin: Date | null } {
+  if ("tipo" in input && input.tipo === "DIAS_COMPLETOS") {
+    return {
+      inicio: instanteDelEstablecimiento(input.fechaDesde),
+      fin: instanteDelEstablecimiento(sumarDiasFecha(input.fechaHasta, 1)),
+    };
+  }
+
+  return {
+    inicio: new Date(input.fechaHoraInicio),
+    fin: input.fechaHoraFin ? new Date(input.fechaHoraFin) : null,
+  };
+}
+
+function parsearLimiteCalendario(valor: string, esFin: boolean): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(valor)) {
+    return esFin
+      ? instanteDelEstablecimiento(sumarDiasFecha(valor, 1))
+      : instanteDelEstablecimiento(valor);
+  }
+  return new Date(valor);
+}
+
 export async function crearBloqueo(
   id: number,
   input: CrearBloqueoInput,
   usuario: TokenPayload,
 ) {
   exigirAdministrador(usuario);
-  const inicio =
-    input.tipo === "FRANJA"
-      ? new Date(input.fechaHoraInicio)
-      : instanteDelEstablecimiento(input.fechaDesde);
-  const fin =
-    input.tipo === "FRANJA"
-      ? input.fechaHoraFin
-        ? new Date(input.fechaHoraFin)
-        : null
-      : instanteDelEstablecimiento(sumarDiasFecha(input.fechaHasta, 1));
+  const { inicio, fin } = resolverRangoBloqueo(input);
 
   return prisma.$transaction(async (tx) => {
     await bloquearRecursos(tx, [id]);
@@ -100,4 +122,187 @@ export async function eliminarBloqueo(
     if (resultado.count === 0)
       throw new BloqueoNotFoundError("Bloqueo no encontrado en este espacio");
   });
+}
+
+/**
+ * Crea un bloqueo por espacio (recursoId) o global (recursoId: null) y cancela todas las reservas
+ * activas y holds solapados con el intervalo bloqueado.
+ */
+export async function crearBloqueoGlobal(
+  input: CrearBloqueoGlobalInput,
+  usuario: TokenPayload,
+) {
+  exigirAdministrador(usuario);
+  const { inicio, fin } = resolverRangoBloqueo(input);
+  const recursoId = input.recursoId ?? null;
+
+  return prisma.$transaction(
+    async (tx) => {
+      if (recursoId !== null) {
+        await bloquearRecursos(tx, [recursoId]);
+        await exigirEspacio(tx, recursoId);
+      } else {
+        const salas = await tx.recurso.findMany({
+          where: { sala: { isNot: null } },
+          select: { id: true },
+          orderBy: { id: "asc" },
+        });
+        await bloquearRecursos(
+          tx,
+          salas.map((s) => s.id),
+        );
+      }
+
+      const bloqueo = await tx.bloqueo.create({
+        data: {
+          recursoId,
+          fechaHoraInicio: inicio,
+          fechaHoraFin: fin,
+          motivo: input.motivo,
+          creadoPorId: usuario.id,
+        },
+        include: {
+          recurso: {
+            select: {
+              id: true,
+              nombre: true,
+              sala: { select: { ubicacion: true } },
+            },
+          },
+        },
+      });
+
+      const ahora = reloj.ahora();
+      const puntoCorteFin = fin === null || inicio > ahora ? inicio : ahora;
+
+      // Cancelar todas las reservas activas solapadas (incluyendo las que ya realizaron check-in)
+      const afectadas = await tx.reserva.findMany({
+        where: {
+          fechaHoraCancelacion: null,
+          fechaHoraCheckOut: null,
+          fechaHoraFin: { gt: puntoCorteFin },
+          ...(fin ? { fechaHoraInicio: { lt: fin } } : {}),
+          ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
+        },
+        select: { id: true },
+        orderBy: { id: "asc" },
+      });
+
+      let reservasCanceladas = 0;
+      const motivoCancelacion = `Bloqueo administrativo: ${input.motivo}`;
+
+      for (const { id: reservaId } of afectadas) {
+        await bloquearReserva(tx, reservaId);
+        const res = await tx.reserva.updateMany({
+          where: {
+            id: reservaId,
+            fechaHoraCancelacion: null,
+            fechaHoraCheckOut: null,
+          },
+          data: {
+            fechaHoraCancelacion: ahora,
+            motivoCancelacion,
+            canceladoPorId: usuario.id,
+            tipoCancelacion: "ADMINISTRADOR",
+          },
+        });
+        if (res.count > 0) {
+          reservasCanceladas += res.count;
+          await registrarEventoReserva(tx, {
+            reservaId,
+            accion: "CANCELACION",
+            actorId: usuario.id,
+            actorRol: usuario.rol,
+            fechaHora: ahora,
+            detalle: motivoCancelacion,
+          });
+        }
+      }
+
+      // Liberar también los holds (ReservaPendiente) solapados
+      const holdsAfectados = await tx.reservaPendiente.findMany({
+        where: {
+          fechaHoraDeseadaFin: { gt: inicio },
+          ...(fin ? { fechaHoraDeseadaInicio: { lt: fin } } : {}),
+          ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
+        },
+        select: { id: true },
+      });
+
+      if (holdsAfectados.length > 0) {
+        const holdIds = holdsAfectados.map((h) => h.id);
+        await tx.reservaPendienteRecurso.deleteMany({
+          where: { reservaPendienteId: { in: holdIds } },
+        });
+        await tx.reservaPendiente.deleteMany({
+          where: { id: { in: holdIds } },
+        });
+      }
+
+      return {
+        bloqueo,
+        reservasCanceladas,
+        holdsLiberados: holdsAfectados.length,
+      };
+    },
+    { maxWait: 10000, timeout: 15000 },
+  );
+}
+
+/**
+ * Lista todos los bloqueos (por espacio y globales) que solapan un rango para el calendario mensual.
+ */
+export async function listarBloqueosCalendario(
+  query: ListarBloqueosCalendarioQuery,
+  usuario: TokenPayload,
+) {
+  exigirAdministrador(usuario);
+
+  const desdeDate = query.desde
+    ? parsearLimiteCalendario(query.desde, false)
+    : null;
+  const hastaDate = query.hasta
+    ? parsearLimiteCalendario(query.hasta, true)
+    : null;
+
+  if (desdeDate && hastaDate && hastaDate <= desdeDate) {
+    throw new BloqueoBusinessError(
+      "La fecha 'hasta' debe ser posterior o igual a 'desde'",
+    );
+  }
+
+  const where: Prisma.BloqueoWhereInput = {};
+  if (desdeDate) {
+    Object.assign(where, bloqueosSolapados(desdeDate, hastaDate));
+  } else if (hastaDate) {
+    where.fechaHoraInicio = { lt: hastaDate };
+  }
+
+  return prisma.bloqueo.findMany({
+    where,
+    include: {
+      recurso: {
+        select: {
+          id: true,
+          nombre: true,
+          sala: { select: { ubicacion: true } },
+        },
+      },
+    },
+    orderBy: [{ fechaHoraInicio: "asc" }, { id: "asc" }],
+  });
+}
+
+/**
+ * Elimina un bloqueo por su ID (aplica tanto a bloqueos de sala como globales).
+ */
+export async function eliminarBloqueoPorId(
+  id: number,
+  usuario: TokenPayload,
+) {
+  exigirAdministrador(usuario);
+  const resultado = await prisma.bloqueo.deleteMany({ where: { id } });
+  if (resultado.count === 0) {
+    throw new BloqueoNotFoundError("Bloqueo no encontrado");
+  }
 }

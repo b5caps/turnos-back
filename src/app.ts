@@ -9,6 +9,8 @@ import espaciosRoutes from "./routes/espacios.routes.js";
 import configuracionRoutes from "./routes/configuracion.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import bloqueosRoutes from "./routes/bloqueos.routes.js";
+import bloqueosGlobalesRoutes from "./routes/bloqueos-globales.routes.js";
+import feriadosRoutes from "./routes/feriados.routes.js";
 import asistenciaRoutes from "./routes/asistencia.routes.js";
 import { validationHook } from "./lib/validation.js";
 
@@ -24,6 +26,8 @@ app.route("/api/reservas", reservasRoutes);
 app.route("/api/auth", authRoutes);
 app.route("/api/espacios", espaciosRoutes);
 app.route("/api/espacios", bloqueosRoutes);
+app.route("/api/bloqueos", bloqueosGlobalesRoutes);
+app.route("/api/feriados", feriadosRoutes);
 app.route("/api/configuracion", configuracionRoutes);
 app.route("/api/dashboard", dashboardRoutes);
 app.route("/api", asistenciaRoutes);

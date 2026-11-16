@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
 import { bloquearReserva } from "../lib/reservas-lock.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
+import { fechaDelEstablecimiento } from "../lib/horarios.js";
 import { reloj } from "../lib/reloj.js";
 import type {
   CancelarReservaInput,
@@ -695,9 +696,23 @@ export async function confirmarReserva(
         );
       }
 
+      const feriado = await tx.feriado.findUnique({
+        where: {
+          fecha: fechaDelEstablecimiento(pendiente.fechaHoraDeseadaInicio),
+        },
+      });
+      if (feriado) {
+        throw new ReservaConflictError(
+          `No se pueden confirmar reservas en días feriados (${feriado.nombre})`,
+        );
+      }
+
       const bloqueo = await tx.bloqueo.findFirst({
         where: {
-          recursoId: { in: pendiente.recursos.map((r) => r.recursoId) },
+          OR: [
+            { recursoId: { in: pendiente.recursos.map((r) => r.recursoId) } },
+            { recursoId: null },
+          ],
           ...bloqueosSolapados(
             pendiente.fechaHoraDeseadaInicio,
             pendiente.fechaHoraDeseadaFin,
