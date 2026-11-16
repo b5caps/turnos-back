@@ -125,6 +125,90 @@ export async function eliminarBloqueo(
 }
 
 /**
+ * Cancela todas las reservas activas (incluso en curso con check-in) y libera los holds
+ * solapados con el intervalo [inicio, fin), registrando el evento de cancelación en ReservaBitacora.
+ */
+export async function cancelarReservasYHoldsEnRango(
+  tx: Prisma.TransactionClient,
+  params: {
+    inicio: Date;
+    fin: Date | null;
+    recursoId: number | null;
+    motivoCancelacion: string;
+    usuario: TokenPayload;
+  },
+): Promise<{ reservasCanceladas: number; holdsLiberados: number }> {
+  const { inicio, fin, recursoId, motivoCancelacion, usuario } = params;
+  const ahora = reloj.ahora();
+  const puntoCorteFin = fin === null || inicio > ahora ? inicio : ahora;
+
+  const afectadas = await tx.reserva.findMany({
+    where: {
+      fechaHoraCancelacion: null,
+      fechaHoraCheckOut: null,
+      fechaHoraFin: { gt: puntoCorteFin },
+      ...(fin ? { fechaHoraInicio: { lt: fin } } : {}),
+      ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
+    },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+
+  let reservasCanceladas = 0;
+  for (const { id: reservaId } of afectadas) {
+    await bloquearReserva(tx, reservaId);
+    const res = await tx.reserva.updateMany({
+      where: {
+        id: reservaId,
+        fechaHoraCancelacion: null,
+        fechaHoraCheckOut: null,
+      },
+      data: {
+        fechaHoraCancelacion: ahora,
+        motivoCancelacion,
+        canceladoPorId: usuario.id,
+        tipoCancelacion: "ADMINISTRADOR",
+      },
+    });
+    if (res.count > 0) {
+      reservasCanceladas += res.count;
+      await registrarEventoReserva(tx, {
+        reservaId,
+        accion: "CANCELACION",
+        actorId: usuario.id,
+        actorRol: usuario.rol,
+        fechaHora: ahora,
+        detalle: motivoCancelacion,
+      });
+    }
+  }
+
+  const holdsAfectados = await tx.reservaPendiente.findMany({
+    where: {
+      fechaHoraDeseadaFin: { gt: inicio },
+      ...(fin ? { fechaHoraDeseadaInicio: { lt: fin } } : {}),
+      ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
+    },
+    select: { id: true },
+  });
+
+  if (holdsAfectados.length > 0) {
+    const holdIds = holdsAfectados.map((h) => h.id);
+    await tx.reservaPendienteRecurso.deleteMany({
+      where: { reservaPendienteId: { in: holdIds } },
+    });
+    await tx.reservaPendiente.deleteMany({
+      where: { id: { in: holdIds } },
+    });
+  }
+
+  return {
+    reservasCanceladas,
+    holdsLiberados: holdsAfectados.length,
+  };
+}
+
+/**
  * Crea un bloqueo por espacio (recursoId) o global (recursoId: null) y cancela todas las reservas
  * activas y holds solapados con el intervalo bloqueado.
  */
@@ -172,77 +256,19 @@ export async function crearBloqueoGlobal(
         },
       });
 
-      const ahora = reloj.ahora();
-      const puntoCorteFin = fin === null || inicio > ahora ? inicio : ahora;
-
-      // Cancelar todas las reservas activas solapadas (incluyendo las que ya realizaron check-in)
-      const afectadas = await tx.reserva.findMany({
-        where: {
-          fechaHoraCancelacion: null,
-          fechaHoraCheckOut: null,
-          fechaHoraFin: { gt: puntoCorteFin },
-          ...(fin ? { fechaHoraInicio: { lt: fin } } : {}),
-          ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
-        },
-        select: { id: true },
-        orderBy: { id: "asc" },
-      });
-
-      let reservasCanceladas = 0;
-      const motivoCancelacion = `Bloqueo administrativo: ${input.motivo}`;
-
-      for (const { id: reservaId } of afectadas) {
-        await bloquearReserva(tx, reservaId);
-        const res = await tx.reserva.updateMany({
-          where: {
-            id: reservaId,
-            fechaHoraCancelacion: null,
-            fechaHoraCheckOut: null,
-          },
-          data: {
-            fechaHoraCancelacion: ahora,
-            motivoCancelacion,
-            canceladoPorId: usuario.id,
-            tipoCancelacion: "ADMINISTRADOR",
-          },
+      const { reservasCanceladas, holdsLiberados } =
+        await cancelarReservasYHoldsEnRango(tx, {
+          inicio,
+          fin,
+          recursoId,
+          motivoCancelacion: `Bloqueo administrativo: ${input.motivo}`,
+          usuario,
         });
-        if (res.count > 0) {
-          reservasCanceladas += res.count;
-          await registrarEventoReserva(tx, {
-            reservaId,
-            accion: "CANCELACION",
-            actorId: usuario.id,
-            actorRol: usuario.rol,
-            fechaHora: ahora,
-            detalle: motivoCancelacion,
-          });
-        }
-      }
-
-      // Liberar también los holds (ReservaPendiente) solapados
-      const holdsAfectados = await tx.reservaPendiente.findMany({
-        where: {
-          fechaHoraDeseadaFin: { gt: inicio },
-          ...(fin ? { fechaHoraDeseadaInicio: { lt: fin } } : {}),
-          ...(recursoId !== null ? { recursos: { some: { recursoId } } } : {}),
-        },
-        select: { id: true },
-      });
-
-      if (holdsAfectados.length > 0) {
-        const holdIds = holdsAfectados.map((h) => h.id);
-        await tx.reservaPendienteRecurso.deleteMany({
-          where: { reservaPendienteId: { in: holdIds } },
-        });
-        await tx.reservaPendiente.deleteMany({
-          where: { id: { in: holdIds } },
-        });
-      }
 
       return {
         bloqueo,
         reservasCanceladas,
-        holdsLiberados: holdsAfectados.length,
+        holdsLiberados,
       };
     },
     { maxWait: 10000, timeout: 15000 },

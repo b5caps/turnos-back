@@ -111,13 +111,21 @@ export async function consultarReservasParaQr(
   return { recursoId: qr.recursoId, reservas: reservas.map(datosAsistencia) };
 }
 
-export async function registrarCheckIn(
+async function ejecutarCheckIn(
   id: number,
   usuario: TokenPayload,
-  tokenQr?: string,
-) {
-  const manual = tokenQr === undefined;
+  opciones: {
+    tokenQr?: string;
+    permitirAdminConQr?: boolean;
+    bajaSiVencido?: boolean;
+  },
+): Promise<
+  | { dadaDeBaja: true }
+  | { dadaDeBaja: false; data: ReturnType<typeof datosAsistencia> }
+> {
+  const manual = opciones.tokenQr === undefined;
   if (manual) exigirAdmin(usuario);
+
   return prisma.$transaction(async (tx) => {
     if (!(await bloquearReserva(tx, id)))
       throw new AsistenciaNotFoundError("Reserva no encontrada");
@@ -126,13 +134,17 @@ export async function registrarCheckIn(
       include: { recursos: true },
     });
     if (!reserva) throw new AsistenciaNotFoundError("Reserva no encontrada");
-    if (!manual && reserva.usuarioId !== usuario.id)
+
+    const puedeActuarPorOtro =
+      usuario.rol === "ADMIN" && (manual || opciones.permitirAdminConQr);
+    if (!puedeActuarPorOtro && reserva.usuarioId !== usuario.id)
       throw new AsistenciaForbiddenError(
         "Solo puedes registrar tu propia asistencia mediante QR",
       );
+
     if (!manual) {
       const qr = await tx.qrEspacio.findUnique({
-        where: { tokenHash: hash(tokenQr!) },
+        where: { tokenHash: hash(opciones.tokenQr!) },
       });
       if (!qr || qr.fechaRevocacion)
         throw new AsistenciaNotFoundError("QR inválido o revocado");
@@ -141,6 +153,7 @@ export async function registrarCheckIn(
           "El QR no corresponde al espacio de esta reserva",
         );
     }
+
     if (
       !reserva.fechaHoraConfirmacion ||
       reserva.fechaHoraCancelacion ||
@@ -150,24 +163,84 @@ export async function registrarCheckIn(
         "La reserva no está confirmada o ya está cancelada, liberada o finalizada",
       );
     }
+
     // Reintentos no cambian ni la fecha ni la autoría de una asistencia existente.
-    if (reserva.fechaHoraCheckIn) return datosAsistencia(reserva);
+    if (reserva.fechaHoraCheckIn)
+      return { dadaDeBaja: false as const, data: datosAsistencia(reserva) };
+
     const ahora = reloj.ahora();
     if (ahora < reserva.fechaHoraInicio)
       throw new AsistenciaConflictError("La reserva todavía no comenzó");
-    if (ahora >= reserva.fechaLimiteCheckIn || ahora >= reserva.fechaHoraFin)
+
+    if (ahora >= reserva.fechaLimiteCheckIn || ahora >= reserva.fechaHoraFin) {
+      if (opciones.bajaSiVencido) {
+        await tx.reserva.update({
+          where: { id },
+          data: {
+            fechaHoraCancelacion: ahora,
+            tipoCancelacion: "AUSENCIA",
+            motivoCancelacion: "Liberada automáticamente por ausencia",
+          },
+        });
+        return { dadaDeBaja: true as const };
+      }
       throw new AsistenciaConflictError(
         "El plazo para registrar asistencia ha vencido",
       );
-    return datosAsistencia(
-      await tx.reserva.update({
-        where: { id },
-        data: {
-          fechaHoraCheckIn: ahora,
-          origenCheckIn: manual ? "ADMIN" : "QR",
-          checkInRegistradoPorId: usuario.id,
-        },
-      }),
-    );
+    }
+
+    const actualizada = await tx.reserva.update({
+      where: { id },
+      data: {
+        fechaHoraCheckIn: ahora,
+        origenCheckIn: manual ? "ADMIN" : "QR",
+        checkInRegistradoPorId: usuario.id,
+      },
+    });
+    return { dadaDeBaja: false as const, data: datosAsistencia(actualizada) };
   });
+}
+
+export async function registrarCheckIn(
+  id: number,
+  usuario: TokenPayload,
+  tokenQr?: string,
+) {
+  const resultado = await ejecutarCheckIn(id, usuario, { tokenQr });
+  if (resultado.dadaDeBaja) {
+    throw new AsistenciaConflictError(
+      "El plazo para registrar asistencia ha vencido",
+    );
+  }
+  return resultado.data;
+}
+
+/**
+ * Registra el check-in (con tokenQr para usuarios comunes, o manual/QR para ADMIN) y da de baja
+ * inmediatamente la reserva como LIBERADA_POR_AUSENCIA si venció el plazo de tolerancia.
+ */
+export async function registrarCheckInConBaja(
+  id: number,
+  usuario: TokenPayload,
+  tokenQr?: string,
+) {
+  if (tokenQr === undefined && usuario.rol !== "ADMIN") {
+    throw new AsistenciaForbiddenError(
+      "Debes enviar el tokenQr para registrar tu asistencia",
+    );
+  }
+
+  const resultado = await ejecutarCheckIn(id, usuario, {
+    tokenQr,
+    permitirAdminConQr: true,
+    bajaSiVencido: true,
+  });
+
+  if (resultado.dadaDeBaja) {
+    throw new AsistenciaConflictError(
+      "El plazo para registrar asistencia ha vencido y el turno fue dado de baja por ausencia",
+    );
+  }
+
+  return resultado.data;
 }

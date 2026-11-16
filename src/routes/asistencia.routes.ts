@@ -4,6 +4,7 @@ import {
   asistenciaSchema,
   idAsistenciaSchema,
   qrEmitidoSchema,
+  tokenQrOpcionalSchema,
   tokenQrSchema,
 } from "../schemas/asistencia.schema.js";
 import { errorResponse } from "../schemas/reservas.schema.js";
@@ -14,6 +15,7 @@ import {
   consultarReservasParaQr,
   emitirQrEspacio,
   registrarCheckIn,
+  registrarCheckInConBaja,
   revocarQrEspacio,
 } from "../services/asistencia.service.js";
 
@@ -181,6 +183,42 @@ asistencia.openapi(
     return c.json(
       {
         data: await registrarCheckIn(c.req.valid("param").id, c.get("usuario")),
+      },
+      200,
+    );
+  },
+);
+
+asistencia.openapi(
+  createRoute({
+    ...comunes,
+    method: "post",
+    path: "/reservas/{id}/checkin",
+    summary:
+      "Registrar entrada y dar de baja por ausencia si venció la tolerancia",
+    description:
+      "Valida QR para el titular (o permite body vacío para ADMIN). Si se intenta pasado el límite de tolerancia (15 min por defecto), da de baja inmediatamente el turno como LIBERADA_POR_AUSENCIA y responde 409.",
+    request: {
+      params: idAsistenciaSchema,
+      body: { required: false, content: json(tokenQrOpcionalSchema) },
+    },
+    responses: {
+      ...errores,
+      200: {
+        description: "Asistencia registrada",
+        content: json(z.object({ data: asistenciaSchema })),
+      },
+    },
+  }),
+  async (c) => {
+    const body = (c.req.valid("json") as { tokenQr?: string } | undefined) ?? {};
+    return c.json(
+      {
+        data: await registrarCheckInConBaja(
+          c.req.valid("param").id,
+          c.get("usuario"),
+          body.tokenQr,
+        ),
       },
       200,
     );

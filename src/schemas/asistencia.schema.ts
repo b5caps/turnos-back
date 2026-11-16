@@ -5,6 +5,15 @@ export const tokenQrSchema = z
     tokenQr: z.string().regex(/^[A-Za-z0-9_-]{43}$/, "Token QR inválido"),
   })
   .strict();
+
+export const tokenQrOpcionalSchema = z
+  .object({
+    tokenQr: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{43}$/, "Token QR inválido")
+      .optional(),
+  })
+  .strict();
 export const idAsistenciaSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
