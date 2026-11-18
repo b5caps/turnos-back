@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
-import { bloquearReserva } from "../lib/reservas-lock.js";
+import { bloquearReserva, bloquearUsuario } from "../lib/reservas-lock.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
 import { fechaDelEstablecimiento } from "../lib/horarios.js";
 import { reloj } from "../lib/reloj.js";
@@ -16,6 +16,7 @@ import type { TokenPayload } from "./auth.service.js";
 import {
   calcularFechaLimiteCheckIn,
   DURACION_HOLD_MINUTOS,
+  validarSinSolapamientoUsuario,
 } from "./disponibilidad.service.js";
 import {
   construirResumenAuditoria,
@@ -636,10 +637,14 @@ export async function confirmarReserva(
     async (tx) => {
       const referencia = await tx.reservaPendiente.findUnique({
         where: { id: reservaPendienteId },
-        select: { recursos: { select: { recursoId: true } } },
+        select: {
+          usuarioId: true,
+          recursos: { select: { recursoId: true } },
+        },
       });
       if (!referencia)
         throw new ReservaNotFoundError("Reserva pendiente no encontrada");
+      await bloquearUsuario(tx, referencia.usuarioId);
       await bloquearRecursos(
         tx,
         referencia.recursos.map((r) => r.recursoId),
@@ -723,6 +728,14 @@ export async function confirmarReserva(
         throw new ReservaConflictError(
           "El horario se encuentra bloqueado por administración. No se puede confirmar la reserva pendiente.",
         );
+
+      await validarSinSolapamientoUsuario(tx, {
+        usuarioId: pendiente.usuarioId,
+        inicio: pendiente.fechaHoraDeseadaInicio,
+        fin: pendiente.fechaHoraDeseadaFin,
+        ahora,
+        excluirReservaPendienteId: pendiente.id,
+      });
 
       const reservaConfirmada = await tx.reserva.create({
         data: {

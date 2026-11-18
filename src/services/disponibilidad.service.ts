@@ -1,4 +1,4 @@
-import type { Rol } from "@prisma/client";
+import type { Prisma, Rol } from "@prisma/client";
 import {
   ReservaConflictError,
   ReservaNotFoundError,
@@ -10,6 +10,7 @@ import {
 } from "./auditoria.service.js";
 import { prisma } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
+import { bloquearUsuario } from "../lib/reservas-lock.js";
 import {
   diaSemanaFecha,
   fechaDelEstablecimiento,
@@ -17,7 +18,10 @@ import {
   minutosDelEstablecimiento,
   sumarDiasFecha,
 } from "../lib/horarios.js";
-import { liberarAusenciasDeRecursos } from "./ausencias.service.js";
+import {
+  liberarAusenciasDeRecursos,
+  sinAsistenciaVencida,
+} from "./ausencias.service.js";
 import { reloj } from "../lib/reloj.js";
 
 export const DURACION_HOLD_MINUTOS = 10;
@@ -384,6 +388,63 @@ async function consultarDisponibilidadPorTipo(
   };
 }
 
+/** Verifica que el titular no tenga otra reserva activa ni hold vigente en [inicio, fin). */
+export async function validarSinSolapamientoUsuario(
+  tx: Prisma.TransactionClient,
+  params: {
+    usuarioId: number;
+    inicio: Date;
+    fin: Date;
+    ahora: Date;
+    excluirReservaPendienteId?: number;
+  },
+) {
+  const { usuarioId, inicio, fin, ahora, excluirReservaPendienteId } = params;
+  const limiteHold = new Date(
+    ahora.getTime() - DURACION_HOLD_MINUTOS * 60 * 1000,
+  );
+
+  const reservaSolapada = await tx.reserva.findFirst({
+    where: {
+      usuarioId,
+      fechaHoraCancelacion: null,
+      fechaHoraInicio: { lt: fin },
+      fechaHoraFin: { gt: inicio },
+      OR: [
+        { fechaHoraCheckOut: null },
+        { fechaHoraCheckOut: { gt: inicio } },
+      ],
+      NOT: sinAsistenciaVencida(ahora),
+    },
+    select: { id: true },
+  });
+
+  if (reservaSolapada) {
+    throw new ReservaConflictError(
+      "El usuario ya posee una reserva activa que se superpone con el horario solicitado",
+    );
+  }
+
+  const holdSolapado = await tx.reservaPendiente.findFirst({
+    where: {
+      usuarioId,
+      ...(excluirReservaPendienteId !== undefined
+        ? { id: { not: excluirReservaPendienteId } }
+        : {}),
+      fechaHoraSolicitud: { gt: limiteHold },
+      fechaHoraDeseadaInicio: { lt: fin },
+      fechaHoraDeseadaFin: { gt: inicio },
+    },
+    select: { id: true },
+  });
+
+  if (holdSolapado) {
+    throw new ReservaConflictError(
+      "El usuario ya posee una reserva pendiente que se superpone con el horario solicitado",
+    );
+  }
+}
+
 export async function crearReserva(
   input: CrearReservaInput,
   actor?: { id: number; rol: Rol },
@@ -532,9 +593,11 @@ export async function crearReserva(
 
   return prisma.$transaction(
     async (tx) => {
-      // 1. Bloqueo pesimista en PostgreSQL para evitar carreras concurrentes
+      // 1. Bloqueo pesimista en PostgreSQL: Usuario antes que Recursos (orden global anti-deadlock)
+      await bloquearUsuario(tx, input.usuarioId);
       await bloquearRecursos(tx, recursoIds);
-      if (reloj.ahora() >= fechaLimiteCheckIn) {
+      const ahoraTx = reloj.ahora();
+      if (ahoraTx >= fechaLimiteCheckIn) {
         throw new DisponibilidadError(
           "El plazo de asistencia del horario solicitado ya venció",
         );
@@ -655,6 +718,13 @@ export async function crearReserva(
           );
         }
       }
+
+      await validarSinSolapamientoUsuario(tx, {
+        usuarioId: input.usuarioId,
+        inicio,
+        fin,
+        ahora: ahoraTx,
+      });
 
       // 3. Si es ADMIN y solicitó confirmación inmediata: Crear directamente la Reserva
       if (input.confirmarInmediato) {

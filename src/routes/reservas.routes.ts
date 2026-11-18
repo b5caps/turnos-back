@@ -179,7 +179,7 @@ const crearReservaRoute = createRoute({
     ),
     404: errorResponse("Usuario o recurso especificado no encontrado"),
     409: errorResponse(
-      "Uno o más recursos ya se encuentran reservados o bloqueados en ese horario",
+      "Uno o más recursos ya se encuentran reservados o bloqueados, o el usuario ya posee una reserva en ese horario",
     ),
   },
 });
@@ -208,7 +208,7 @@ const confirmarReservaRoute = createRoute({
     ),
     404: errorResponse("Reserva pendiente no encontrada"),
     409: errorResponse(
-      "El tiempo para confirmar ha expirado o el recurso no está disponible",
+      "El tiempo para confirmar ha expirado, el recurso no está disponible o el usuario ya posee una reserva en ese horario",
     ),
   },
 });

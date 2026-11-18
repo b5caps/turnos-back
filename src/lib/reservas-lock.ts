@@ -1,6 +1,14 @@
 import type { Prisma } from "@prisma/client";
 import { bloquearRecursos } from "./bloqueos.js";
 
+/** Adquirir antes que bloquearRecursos para mantener el orden Usuario -> Recurso -> Reserva. */
+export async function bloquearUsuario(
+  tx: Prisma.TransactionClient,
+  usuarioId: number,
+) {
+  await tx.$queryRaw`SELECT id FROM "Usuario" WHERE id = ${usuarioId} FOR UPDATE`;
+}
+
 /** Mismo orden para check-in, ausencia y cambios manuales: recursos, luego reserva. */
 export async function bloquearReserva(
   tx: Prisma.TransactionClient,

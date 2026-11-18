@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { reloj } from "../lib/reloj.js";
 import { bloquearReserva } from "../lib/reservas-lock.js";
 
-function sinAsistenciaVencida(ahora: Date): Prisma.ReservaWhereInput {
+export function sinAsistenciaVencida(ahora: Date): Prisma.ReservaWhereInput {
   return {
     controlAsistencia: true,
     fechaHoraConfirmacion: { not: null },
