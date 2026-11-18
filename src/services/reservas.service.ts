@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../lib/prisma.js";
+import { prisma, TRANSACCION_OPCIONES } from "../lib/prisma.js";
 import { bloquearRecursos, bloqueosSolapados } from "../lib/bloqueos.js";
 import { bloquearReserva, bloquearUsuario } from "../lib/reservas-lock.js";
 import { obtenerConfiguracion } from "./configuracion.service.js";
@@ -250,6 +250,48 @@ export async function resolverTitularReserva(
   return usuarioAuth.id;
 }
 
+/**
+ * Actualiza una reserva, registra su evento en bitácora y devuelve la reserva con su resumen de auditoría.
+ */
+async function actualizarYAuditarReserva(
+  tx: Prisma.TransactionClient,
+  params: {
+    id: number;
+    data: Prisma.ReservaUncheckedUpdateInput;
+    accion: "EDICION" | "CANCELACION" | "FINALIZACION";
+    actor: TokenPayload;
+    fechaHora: Date;
+    detalle?: string | null;
+  },
+) {
+  const reservaActualizada = await tx.reserva.update({
+    where: { id: params.id },
+    data: params.data,
+    include: includeRecursosCompletos,
+  });
+
+  await registrarEventoReserva(tx, {
+    reservaId: params.id,
+    accion: params.accion,
+    actorId: params.actor.id,
+    actorRol: params.actor.rol,
+    fechaHora: params.fechaHora,
+    ...(params.detalle !== undefined ? { detalle: params.detalle } : {}),
+  });
+
+  const auditoria = await obtenerAuditoriaReserva(
+    params.id,
+    {
+      titularId: reservaActualizada.usuarioId,
+      creadoPorId: reservaActualizada.creadoPorId,
+      canceladoPorId: reservaActualizada.canceladoPorId,
+    },
+    tx,
+  );
+
+  return { ...reservaActualizada, ...auditoria };
+}
+
 export async function editarReserva(
   id: number,
   input: EditarReservaInput,
@@ -382,38 +424,20 @@ export async function editarReserva(
         }
       }
 
-      const dataUpdate: Prisma.ReservaUpdateInput = {};
+      const dataUpdate: Prisma.ReservaUncheckedUpdateInput = {};
       if (input.observacion !== undefined) {
         dataUpdate.observacion = input.observacion?.trim() || null;
       }
 
-      const reservaActualizada = await tx.reserva.update({
-        where: { id },
+      return actualizarYAuditarReserva(tx, {
+        id,
         data: dataUpdate,
-        include: includeRecursosCompletos,
-      });
-
-      await registrarEventoReserva(tx, {
-        reservaId: id,
         accion: "EDICION",
-        actorId: usuarioAuth.id,
-        actorRol: usuarioAuth.rol,
+        actor: usuarioAuth,
         fechaHora: ahora,
       });
-
-      const auditoria = await obtenerAuditoriaReserva(
-        id,
-        {
-          titularId: reservaActualizada.usuarioId,
-          creadoPorId: reservaActualizada.creadoPorId,
-          canceladoPorId: reservaActualizada.canceladoPorId,
-        },
-        tx,
-      );
-
-      return { ...reservaActualizada, ...auditoria };
     },
-    { maxWait: 10000, timeout: 15000 },
+    TRANSACCION_OPCIONES,
   );
 }
 
@@ -423,10 +447,19 @@ export async function cancelarReserva(
   usuarioAuth: TokenPayload,
 ) {
   return prisma.$transaction(async (tx) => {
-    await bloquearReserva(tx, id);
+    if (!(await bloquearReserva(tx, id))) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
+
     const reserva = await tx.reserva.findUnique({
       where: { id },
-      include: includeRecursosCompletos,
+      select: {
+        usuarioId: true,
+        fechaHoraCancelacion: true,
+        fechaHoraCheckIn: true,
+        fechaHoraCheckOut: true,
+        fechaHoraFin: true,
+      },
     });
 
     if (!reserva) {
@@ -457,12 +490,8 @@ export async function cancelarReserva(
     }
 
     const motivo = input?.motivoCancelacion?.trim() || null;
-    const resultado = await tx.reserva.updateMany({
-      where: {
-        id,
-        fechaHoraCancelacion: null,
-        fechaHoraCheckIn: null,
-      },
+    return actualizarYAuditarReserva(tx, {
+      id,
       data: {
         fechaHoraCancelacion: ahora,
         motivoCancelacion: motivo,
@@ -470,38 +499,12 @@ export async function cancelarReserva(
         tipoCancelacion:
           usuarioAuth.rol === "ADMIN" ? "ADMINISTRADOR" : "USUARIO",
       },
-    });
-
-    if (resultado.count === 0) {
-      throw new ReservaConflictError("La reserva ya se encuentra cancelada");
-    }
-
-    await registrarEventoReserva(tx, {
-      reservaId: id,
       accion: "CANCELACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
+      actor: usuarioAuth,
       fechaHora: ahora,
       detalle: motivo,
     });
-
-    const reservaActualizada = await tx.reserva.findUniqueOrThrow({
-      where: { id },
-      include: includeRecursosCompletos,
-    });
-
-    const auditoria = await obtenerAuditoriaReserva(
-      id,
-      {
-        titularId: reservaActualizada.usuarioId,
-        creadoPorId: reservaActualizada.creadoPorId,
-        canceladoPorId: reservaActualizada.canceladoPorId,
-      },
-      tx,
-    );
-
-    return { ...reservaActualizada, ...auditoria };
-  });
+  }, TRANSACCION_OPCIONES);
 }
 
 export async function finalizarReserva(
@@ -510,9 +513,20 @@ export async function finalizarReserva(
   usuarioAuth: TokenPayload,
 ) {
   return prisma.$transaction(async (tx) => {
-    await bloquearReserva(tx, id);
+    if (!(await bloquearReserva(tx, id))) {
+      throw new ReservaNotFoundError("Reserva no encontrada");
+    }
+
     const reserva = await tx.reserva.findUnique({
       where: { id },
+      select: {
+        usuarioId: true,
+        fechaHoraCancelacion: true,
+        fechaHoraCheckOut: true,
+        fechaHoraCheckIn: true,
+        fechaHoraInicio: true,
+        fechaHoraFin: true,
+      },
     });
 
     if (!reserva) {
@@ -547,51 +561,18 @@ export async function finalizarReserva(
     }
 
     const observacionLimpia = input?.observacion?.trim() || null;
-    const resultado = await tx.reserva.updateMany({
-      where: {
-        id,
-        fechaHoraCancelacion: null,
-        fechaHoraCheckOut: null,
-        fechaHoraCheckIn: { not: null },
-      },
+    return actualizarYAuditarReserva(tx, {
+      id,
       data: {
         fechaHoraCheckOut: ahora,
         ...(observacionLimpia ? { observacion: observacionLimpia } : {}),
       },
-    });
-
-    if (resultado.count === 0) {
-      throw new ReservaConflictError(
-        "La reserva ya se encuentra finalizada o cancelada",
-      );
-    }
-
-    await registrarEventoReserva(tx, {
-      reservaId: id,
       accion: "FINALIZACION",
-      actorId: usuarioAuth.id,
-      actorRol: usuarioAuth.rol,
+      actor: usuarioAuth,
       fechaHora: ahora,
       detalle: observacionLimpia,
     });
-
-    const reservaActualizada = await tx.reserva.findUniqueOrThrow({
-      where: { id },
-      include: includeRecursosCompletos,
-    });
-
-    const auditoria = await obtenerAuditoriaReserva(
-      id,
-      {
-        titularId: reservaActualizada.usuarioId,
-        creadoPorId: reservaActualizada.creadoPorId,
-        canceladoPorId: reservaActualizada.canceladoPorId,
-      },
-      tx,
-    );
-
-    return { ...reservaActualizada, ...auditoria };
-  });
+  }, TRANSACCION_OPCIONES);
 }
 
 export async function confirmarReserva(
@@ -782,7 +763,7 @@ export async function confirmarReserva(
         data: { ...reservaConfirmada, ...auditoria },
       };
     },
-    { maxWait: 10000, timeout: 15000 },
+    TRANSACCION_OPCIONES,
   );
 
   if (resultadoTx.expirado) {

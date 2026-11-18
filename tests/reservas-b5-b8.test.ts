@@ -9,11 +9,15 @@ import {
 } from "../src/services/auditoria.service.js";
 import { estadoReserva } from "../src/lib/reservas-estado.js";
 import { reloj } from "../src/lib/reloj.js";
-import { prisma } from "../src/lib/prisma.js";
+import { prisma, TRANSACCION_OPCIONES } from "../src/lib/prisma.js";
 import {
+  cancelarReserva,
   confirmarReserva,
+  finalizarReserva,
   ReservaConflictError,
+  ReservaNotFoundError,
 } from "../src/services/reservas.service.js";
+import { registrarCheckIn } from "../src/services/asistencia.service.js";
 
 afterEach(() => mock.restoreAll());
 
@@ -267,5 +271,264 @@ describe("B8: Validación de registro y cuerpo JSON", () => {
     const json = (await res.json()) as { message?: string };
     assert.equal(typeof json.message, "string");
     assert.ok(json.message!.includes("DNI") || json.message!.includes("teléfono"));
+  });
+});
+
+describe("Transacciones optimizadas con timeout en cancelación, finalización y check-in", () => {
+  test("cancelarReserva usa TRANSACCION_OPCIONES, lectura escalar y un único update con bitácora", async () => {
+    const ahora = new Date("2026-12-01T10:00:00.000Z");
+    mock.method(reloj, "ahora", () => ahora);
+
+    const origTx = Object.getOwnPropertyDescriptor(prisma, "$transaction");
+    let txOptions: unknown;
+    const findUniqueArgs: any[] = [];
+    let updateCalled = 0;
+    let findUniqueOrThrowCalled = 0;
+    let bitacoraAccion: string | null = null;
+
+    Object.defineProperty(prisma, "$transaction", {
+      configurable: true,
+      value: async (fn: any, options: unknown) => {
+        txOptions = options;
+        const tx = {
+          $queryRaw: async () => [],
+          reserva: {
+            findUnique: async (args: any) => {
+              findUniqueArgs.push(args);
+              if (args.select?.recursos) {
+                return { recursos: [{ recursoId: 3 }] };
+              }
+              return {
+                usuarioId: 7,
+                fechaHoraCancelacion: null,
+                fechaHoraCheckIn: null,
+                fechaHoraCheckOut: null,
+                fechaHoraFin: new Date("2026-12-01T12:00:00.000Z"),
+              };
+            },
+            findUniqueOrThrow: async () => {
+              findUniqueOrThrowCalled += 1;
+              return {};
+            },
+            update: async ({ data, include }: any) => {
+              updateCalled += 1;
+              assert.ok(include?.recursos);
+              return {
+                id: 50,
+                usuarioId: 7,
+                creadoPorId: 7,
+                canceladoPorId: 7,
+                fechaHoraInicio: new Date("2026-12-01T11:00:00.000Z"),
+                fechaHoraFin: new Date("2026-12-01T12:00:00.000Z"),
+                fechaLimiteCheckIn: new Date("2026-12-01T11:15:00.000Z"),
+                fechaHoraConfirmacion: new Date("2026-12-01T09:00:00.000Z"),
+                fechaHoraCancelacion: data.fechaHoraCancelacion,
+                motivoCancelacion: data.motivoCancelacion,
+                tipoCancelacion: data.tipoCancelacion,
+                fechaHoraCheckIn: null,
+                fechaHoraCheckOut: null,
+                observacion: null,
+                recursos: [],
+              };
+            },
+          },
+          reservaBitacora: {
+            create: async ({ data }: any) => {
+              bitacoraAccion = data.accion;
+              return { id: 1, ...data };
+            },
+            findMany: async () => [
+              {
+                id: 1,
+                reservaId: 50,
+                accion: "CANCELACION",
+                actorId: 7,
+                actorRol: "UTN",
+                actor: null,
+                fechaHora: ahora,
+                detalle: "Cambio de planes",
+              },
+            ],
+          },
+        };
+        return fn(tx);
+      },
+    });
+
+    try {
+      const res = await cancelarReserva(
+        50,
+        { motivoCancelacion: " Cambio de planes " },
+        { id: 7, rol: "UTN" },
+      );
+
+      assert.deepEqual(txOptions, TRANSACCION_OPCIONES);
+      assert.equal(findUniqueArgs.length, 2);
+      assert.equal(findUniqueArgs[1].include, undefined);
+      assert.ok(findUniqueArgs[1].select);
+      assert.equal(updateCalled, 1);
+      assert.equal(findUniqueOrThrowCalled, 0);
+      assert.equal(bitacoraAccion, "CANCELACION");
+      assert.equal(res.canceladoPorId, 7);
+      assert.equal(res.canceladoPorRol, "UTN");
+      assert.equal(res.motivoCancelacion, "Cambio de planes");
+    } finally {
+      if (origTx) Object.defineProperty(prisma, "$transaction", origTx);
+    }
+  });
+
+  test("cancelarReserva lanza ReservaNotFoundError si bloquearReserva no encuentra la reserva", async () => {
+    const origTx = Object.getOwnPropertyDescriptor(prisma, "$transaction");
+    let findUniqueCalls = 0;
+
+    Object.defineProperty(prisma, "$transaction", {
+      configurable: true,
+      value: async (fn: any) => {
+        const tx = {
+          $queryRaw: async () => [],
+          reserva: {
+            findUnique: async () => {
+              findUniqueCalls += 1;
+              return null;
+            },
+          },
+        };
+        return fn(tx);
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => cancelarReserva(999, undefined, { id: 7, rol: "UTN" }),
+        ReservaNotFoundError,
+      );
+      assert.equal(findUniqueCalls, 1);
+    } finally {
+      if (origTx) Object.defineProperty(prisma, "$transaction", origTx);
+    }
+  });
+
+  test("finalizarReserva usa TRANSACCION_OPCIONES y un único update con bitácora", async () => {
+    const ahora = new Date("2026-12-01T11:30:00.000Z");
+    mock.method(reloj, "ahora", () => ahora);
+
+    const origTx = Object.getOwnPropertyDescriptor(prisma, "$transaction");
+    let txOptions: unknown;
+    let updateCalled = 0;
+    let bitacoraAccion: string | null = null;
+
+    Object.defineProperty(prisma, "$transaction", {
+      configurable: true,
+      value: async (fn: any, options: unknown) => {
+        txOptions = options;
+        const tx = {
+          $queryRaw: async () => [],
+          reserva: {
+            findUnique: async ({ select }: any) =>
+              select?.recursos
+                ? { recursos: [{ recursoId: 3 }] }
+                : {
+                    usuarioId: 7,
+                    fechaHoraCancelacion: null,
+                    fechaHoraCheckOut: null,
+                    fechaHoraCheckIn: new Date("2026-12-01T11:05:00.000Z"),
+                    fechaHoraInicio: new Date("2026-12-01T11:00:00.000Z"),
+                    fechaHoraFin: new Date("2026-12-01T12:00:00.000Z"),
+                  },
+            update: async ({ data }: any) => {
+              updateCalled += 1;
+              return {
+                id: 51,
+                usuarioId: 7,
+                creadoPorId: 7,
+                canceladoPorId: null,
+                fechaHoraCheckOut: data.fechaHoraCheckOut,
+                observacion: data.observacion ?? null,
+                recursos: [],
+              };
+            },
+          },
+          reservaBitacora: {
+            create: async ({ data }: any) => {
+              bitacoraAccion = data.accion;
+              return { id: 2, ...data };
+            },
+            findMany: async () => [],
+          },
+        };
+        return fn(tx);
+      },
+    });
+
+    try {
+      const res = await finalizarReserva(
+        51,
+        { observacion: "Sala ordenada" },
+        { id: 7, rol: "UTN" },
+      );
+
+      assert.deepEqual(txOptions, TRANSACCION_OPCIONES);
+      assert.equal(updateCalled, 1);
+      assert.equal(bitacoraAccion, "FINALIZACION");
+      assert.equal(res.observacion, "Sala ordenada");
+    } finally {
+      if (origTx) Object.defineProperty(prisma, "$transaction", origTx);
+    }
+  });
+
+  test("registrarCheckIn pasa TRANSACCION_OPCIONES a prisma.$transaction", async () => {
+    const ahora = new Date("2026-12-01T11:05:00.000Z");
+    mock.method(reloj, "ahora", () => ahora);
+
+    const origTx = Object.getOwnPropertyDescriptor(prisma, "$transaction");
+    let txOptions: unknown;
+
+    Object.defineProperty(prisma, "$transaction", {
+      configurable: true,
+      value: async (fn: any, options: unknown) => {
+        txOptions = options;
+        const tx = {
+          $queryRaw: async () => [],
+          reserva: {
+            findUnique: async ({ select }: any) =>
+              select?.recursos
+                ? { recursos: [{ recursoId: 3 }] }
+                : {
+                    id: 52,
+                    usuarioId: 7,
+                    fechaHoraConfirmacion: new Date("2026-12-01T09:00:00.000Z"),
+                    fechaHoraCancelacion: null,
+                    fechaHoraCheckOut: null,
+                    fechaHoraCheckIn: null,
+                    fechaHoraInicio: new Date("2026-12-01T11:00:00.000Z"),
+                    fechaHoraFin: new Date("2026-12-01T12:00:00.000Z"),
+                    fechaLimiteCheckIn: new Date("2026-12-01T11:15:00.000Z"),
+                    recursos: [{ recursoId: 3 }],
+                  },
+            update: async ({ data }: any) => ({
+              id: 52,
+              fechaHoraInicio: new Date("2026-12-01T11:00:00.000Z"),
+              fechaHoraFin: new Date("2026-12-01T12:00:00.000Z"),
+              fechaLimiteCheckIn: new Date("2026-12-01T11:15:00.000Z"),
+              fechaHoraCancelacion: null,
+              tipoCancelacion: null,
+              fechaHoraCheckOut: null,
+              fechaHoraCheckIn: data.fechaHoraCheckIn,
+              origenCheckIn: data.origenCheckIn,
+              checkInRegistradoPorId: data.checkInRegistradoPorId,
+            }),
+          },
+        };
+        return fn(tx);
+      },
+    });
+
+    try {
+      const res = await registrarCheckIn(52, { id: 1, rol: "ADMIN" });
+      assert.deepEqual(txOptions, TRANSACCION_OPCIONES);
+      assert.equal(res.origenCheckIn, "ADMIN");
+    } finally {
+      if (origTx) Object.defineProperty(prisma, "$transaction", origTx);
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import QRCode from "qrcode";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "../lib/prisma.js";
+import { prisma, TRANSACCION_OPCIONES } from "../lib/prisma.js";
 import { bloquearRecursos } from "../lib/bloqueos.js";
 import { bloquearReserva } from "../lib/reservas-lock.js";
 import { reloj } from "../lib/reloj.js";
@@ -198,7 +198,7 @@ async function ejecutarCheckIn(
       },
     });
     return { dadaDeBaja: false as const, data: datosAsistencia(actualizada) };
-  });
+  }, TRANSACCION_OPCIONES);
 }
 
 export async function registrarCheckIn(

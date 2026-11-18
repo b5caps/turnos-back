@@ -20,6 +20,11 @@ function buildDatasourceUrl(): string | undefined {
 
 const datasourceUrl = buildDatasourceUrl();
 
+export const TRANSACCION_OPCIONES = {
+  maxWait: 10000,
+  timeout: 15000,
+} as const;
+
 export const prisma = new PrismaClient(
   datasourceUrl ? { datasourceUrl } : undefined,
 );
